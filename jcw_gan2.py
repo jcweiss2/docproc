@@ -36,7 +36,7 @@ num_blocks = 100
 max_block_width = 1000
 max_block_height = 100
 
-subsample_stride = 100
+subsample_stride = 10
 
 d_learning_rate = 1e-3  # 2e-4
 g_learning_rate = 5e-3
@@ -80,9 +80,17 @@ def SignMatrix(ofsize):
 
 
 def subsample(matrix, subsample_stride=1, flip_long=True):
+    sx = subsample_stride
+    sy = subsample_stride
+    if type(subsample_stride) == tuple:
+        sx = subsample_stride[0]
+        sy = subsample_stride[1]
     if(matrix.shape[0] < matrix.shape[1]):
         matrix = matrix.transpose(1, 0)
-    return matrix[::subsample_stride, ::subsample_stride]
+        temp = sx
+        sx = sy
+        sy = temp
+    return matrix[::sx, ::sy]
 
 
 # ##### MODELS: Generator model and discriminator model
@@ -326,22 +334,73 @@ plt.savefig('images/gan_' + str(dt.datetime.now()) + '_jumbled_truth.svg', forma
 
 
 # manual k-means with distance function in output space:
-K = 10
-k_iterations = 5
+K = 40
+k_iterations = 100
 anchors_mapped, anchors_predata = G(myanchors)  # used to relocate centers
 gen_centers = Variable(gi_sampler(K, g_input_size))
 centers_mapped, centers = G(gen_centers)  # K x o_width, K x h
+
+# hard clustering
+dists_to_centers = torch.abs(Variable(mydata).unsqueeze(0).expand(K, mydata.size()[0],mydata.size()[1]) -
+                             centers_mapped.unsqueeze(1).expand(centers_mapped.size()[0],
+                                                                mydata.size()[0],
+                                                                centers_mapped.size()[1])).sum(2)  # K x o_rows
+assignments = np.argmin(dists_to_centers.data.numpy(),0)  # hard assignments
 for k_index in range(k_iterations):
-    dists_to_centers = torch.abs(Variable(mydata).unsqueeze(0).expand(K, mydata.size()[0],mydata.size()[1]) -
-                                 centers_mapped.unsqueeze(1).expand(centers_mapped.size()[0],
-                                                                   mydata.size()[0],
-                                                                   centers_mapped.size()[1])).sum(2)  # K x o_rows
-    assignments = np.argmin(dists_to_centers.data.numpy(),0)  # hard assignments
     newcenters = []
     for assignment in np.unique(assignments):
         newcenters.append(anchors_predata[torch.LongTensor(np.where(assignment == assignments)[0]),:].mean(0).unsqueeze(0))
+    if K - len(newcenters) > 0:
+        # newcenters.append(anchors_predata[np.random.choice(anchors_predata.size()[0], size=K - len(newcenters)),:])  # insert based on data
+        newcenters.append(Variable(gi_sampler(K-len(newcenters), g_input_size)))  # insert randomly according to GAN
+        # TODO insert according to cluster impurity
     centers = torch.cat(tuple(newcenters),0)
     centers_mapped = G.lastlayer(centers)
+    dists_to_centers = torch.abs(Variable(mydata).unsqueeze(0).expand(K, mydata.size()[0],mydata.size()[1]) -
+                                 centers_mapped.unsqueeze(1).expand(centers_mapped.size()[0],
+                                                                    mydata.size()[0],
+                                                                    centers_mapped.size()[1])).sum(2)  # K x o_rows
+    assignments = np.argmin(dists_to_centers.data.numpy(),0)  # hard assignments
+
+# soft clustering # not working effectively
+# for k_index in range(k_iterations):
+#     dists_to_centers = torch.abs(Variable(mydata).unsqueeze(0).expand(K, mydata.size()[0],mydata.size()[1]) -
+#                                  centers_mapped.unsqueeze(1).expand(centers_mapped.size()[0],
+#                                                                     mydata.size()[0],
+#                                                                     centers_mapped.size()[1])).sum(2)  # K x o_rows
+#     min_dists = dists_to_centers.min(1)[0]
+#     avg_min_dist = min_dists.mean()
+#     min_dist_multiples = - torch.pow(dists_to_centers/min_dists.unsqueeze(1).expand(K, dists_to_centers.size()[1]),2) - 1e-2  # add a small epsilon (but average means it should be OK)
+#     # min_dist_multiples = - torch.pow(dists_to_centers/avg_min_dist,2) - 1e-2  # add a small epsilon (but average means it should be OK)
+#     # if k_index == 0:
+#     #     min_dist_multiples = - torch.pow(dists_to_centers/avg_min_dist,2) - 1e-2  # add a small epsilon (but average means it should be OK)
+#     # else:
+#     #     min_dist_multiples = - torch.pow(dists_to_centers/avg_min_dist,2)*torch.log(1+assignments.sum(1,keepdim=True).expand(K,dists_to_centers.size()[1])) - 1e-2
+#     assignments = F.softmax(min_dist_multiples,0)  # K x o_rows
+#     centers = assignments.matmul(anchors_predata)
+#     centers_mapped = G.lastlayer(centers)
+# assignments = assignments.max(0)
+    
+# Plot the cluster centers, mapped to output space
+plt.imshow(subsample(centers_mapped.data.numpy(), subsample_stride=(1,subsample_stride)))
+plt.xlabel('K medoids')
+plt.colorbar()
+plt.savefig('images/gan_' + str(dt.datetime.now()) + '_kmedoids.svg', format="svg"); plt.clf() 
+    
+# Plot the data but color nonzero by cluster membership
+
+
+# Plot the true data by cluster membership
+image_w_cluster = subsample(torch.cat((mydata, torch.Tensor(assignments).float().unsqueeze(1).expand(-1,int(mydata.size()[0]*10/50))),1),
+                                      subsample_stride=(10,subsample_stride))
+image_permuted = image_w_cluster[:,np.random.permutation(image_w_cluster.shape[1])]
+image_ordered = np.argsort(image_permuted[-1,:])
+image_permuted[-int(mydata.size()[0]/50):,:] = (image_permuted[-int(mydata.size()[0]/50):,:] % 2) * 18
+plt.imshow(image_permuted[:,image_ordered].numpy(), aspect='auto')
+plt.xlabel('Cluster membership')
+plt.colorbar()
+plt.savefig('images/gan_' + str(dt.datetime.now()) + '.svg', format="svg"); plt.clf() 
+
 
 
 core_samples_mask = np.zeros_like(db.labels_, dtype=bool)
