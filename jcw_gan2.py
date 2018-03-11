@@ -36,21 +36,47 @@ num_blocks = 100
 max_block_width = 1000
 max_block_height = 100
 
-subsample_stride = 10
+subsample_stride = 1
 
 d_learning_rate = 1e-3  # 2e-4
-g_learning_rate = 5e-3
+g_learning_rate = 5e-2
 i_learning_rate = 1e-4
 optim_betas = (0.9, 0.999)
 num_epochs = 1000000
-print_interval = 10
-image_interval = 100
+print_interval = 4
+image_interval = 16
 d_steps = 1  # 'k' steps in the original GAN paper. Can put the discriminator on higher training freq than generator
 g_steps = 1
-g_anchor_steps = 10
+g_anchor_steps = 20
+anchor_only=True
 alpha = 0  # 1e-1  # penalty for minibatch deviation from training data marginal distributions over features
 beta = 1e-1  # hyperparameter for importance of Information loss
 
+# gpu-mode
+gpu_mode = False
+
+if gpu_mode:
+    t = Variable(torch.FloatTensor(np.array([0,0.5,1]))).cuda()
+    ts = t + t
+    
+### My data not theirs.
+# mydata = torch.Tensor(np.zeros((data_size,g_output_size)))
+# for i in range(num_blocks):
+#     xlb =  np.random.randint(mydata.shape[0])
+#     xub = np.minimum(xlb + 1 + np.random.randint(max_block_height), mydata.shape[0])
+#     ylb =  np.random.randint(mydata.shape[1])
+#     yub = np.minimum(ylb + 1 + np.random.randint(max_block_width), mydata.shape[1])
+    
+#     mydata[xlb:xub,ylb:yub] = torch.Tensor(np.random.poisson(np.random.randint(10), size=(xub-xlb, yub-ylb)))
+# mydata = mydata.clone()
+
+clustercsv = 'medicare/PartD_Prescriber_PUF_NPI_DRUG_15/small_wide.csv'
+mypd = pd.read_csv(clustercsv)
+mypd = mypd.drop(columns='npi')
+mydata = torch.log(torch.FloatTensor(mypd.as_matrix())+1)
+data_size = mydata.size()[0]
+g_output_size = mydata.size()[1]
+d_input_size = g_output_size
 
 # ### Uncomment only one of these
 (name, preprocess, d_input_func) = ("Raw data", lambda data: data, lambda x: x)
@@ -200,22 +226,15 @@ MSE = nn.MSELoss()
 d_optimizer = optim.RMSprop(D.parameters(), lr=d_learning_rate)  # , weight_decay=1e-3)
 g_optimizer = optim.Adam(G.parameters(), lr=g_learning_rate, betas=optim_betas)
 i_optimizer = optim.RMSprop(itertools.chain(G.parameters(), D.parameters()), lr=i_learning_rate)
-    
-### My data not theirs.
-mydata = torch.Tensor(np.zeros((data_size,g_output_size)))
-for i in range(num_blocks):
-    xlb =  np.random.randint(mydata.shape[0])
-    xub = np.minimum(xlb + 1 + np.random.randint(max_block_height), mydata.shape[0])
-    ylb =  np.random.randint(mydata.shape[1])
-    yub = np.minimum(ylb + 1 + np.random.randint(max_block_width), mydata.shape[1])
-    
-    mydata[xlb:xub,ylb:yub] = torch.Tensor(np.random.poisson(np.random.randint(10), size=(xub-xlb, yub-ylb)))
-mydata = mydata.clone()
 
 myanchors = Variable(gi_sampler(data_size, g_input_size))
 
+
 for epoch in range(num_epochs):
+    
     for d_index in range(d_steps):
+        if anchor_only and epoch > 0:
+            break
         # 1. Train D on real+fake
         D.zero_grad()
 
@@ -246,6 +265,8 @@ for epoch in range(num_epochs):
         g_optimizer.step()  # Only optimizes G's parameters
         
     for g_index in range(g_steps):
+        if anchor_only and epoch > 0:
+            break
         # 2A: Train G on D's response (but DO NOT train D on these labels)
 
         gen_input = Variable(gi_sampler(minibatch_size, g_input_size))
@@ -258,13 +279,15 @@ for epoch in range(num_epochs):
 
 
     # I.zero_grad()
-    i_prediction = I(d_fake_last_hidden)
-    i_output = d_gen_input[:,:c_size]
-    i_error = torch.pow((i_prediction - i_output),2).mean()
-    i_loss = beta * i_error
-    i_loss.backward()
-    i_optimizer.step()
-    I.zero_grad()
+    if not anchor_only or epoch == 0:
+        i_prediction = I(d_fake_last_hidden)
+        i_output = d_gen_input[:,:c_size]
+        i_error = torch.pow((i_prediction - i_output),2).mean()
+        i_loss = beta * i_error
+        i_loss.backward()
+        i_optimizer.step()
+        I.zero_grad()
+        
     if epoch % print_interval == 0:
         print("%s: D: %6.3f/%6.3f;  G: %6.3f; I: %6.3f;  (Real: %s, Fake: %s) " % (epoch,
                                                                                    extract(d_real_error)[0],
@@ -273,8 +296,8 @@ for epoch in range(num_epochs):
                                                                                    extract(i_error)[0],
                                                                                    stats(extract(d_real_data)),
                                                                                    stats(extract(d_fake_data))))
-    # if epoch % print_interval == 0:
-    #     print(epoch)
+    if epoch % print_interval == 0:
+        print(epoch)
     if epoch % image_interval == 0:
         plt.figure(figsize=(10,8))
         plt.subplot(141)
