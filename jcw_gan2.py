@@ -25,11 +25,11 @@ g_input_size = 32     # Random noise dimension coming into generator, per output
 g_hidden_size = 32  # Generator complexity
 g_output_size = 10000    # size of generated output vector
 d_input_size = g_output_size   # Minibatch size - cardinality of distributions
-d_hidden_size = 16   # Discriminator complexity
+d_hidden_size = 8   # Discriminator complexity
 d_output_size = 1    # Single dimension for 'real' vs. 'fake'
 i_hidden_size = 8
 c_size = 8
-minibatch_size = 64
+minibatch_size = 128
 data_size = 1000
 
 num_blocks = 100
@@ -39,7 +39,7 @@ max_block_height = 100
 subsample_stride = 1
 
 d_learning_rate = 1e-3  # 2e-4
-g_learning_rate = 5e-2
+g_learning_rate = 5e-3
 i_learning_rate = 1e-4
 optim_betas = (0.9, 0.999)
 num_epochs = 1000000
@@ -47,10 +47,12 @@ print_interval = 4
 image_interval = 16
 d_steps = 1  # 'k' steps in the original GAN paper. Can put the discriminator on higher training freq than generator
 g_steps = 1
-g_anchor_steps = 20
-anchor_only=True
+g_anchor_steps = 10
+anchor_only=False
 alpha = 0  # 1e-1  # penalty for minibatch deviation from training data marginal distributions over features
 beta = 1e-1  # hyperparameter for importance of Information loss
+
+suffix = ''
 
 # gpu-mode
 gpu_mode = False
@@ -125,7 +127,7 @@ class Generator(nn.Module):
         super(Generator, self).__init__()
         self.map1 = nn.Linear(input_size, hidden_size)
         self.hd = hd[int(np.log2(hidden_size))-1]
-        self.permute_number = 10
+        self.permute_number = 4
         self.permuteTensor = torch.cat(tuple([SignMatrix(hidden_size).matmul(MakePermuteMatrix(hidden_size)).unsqueeze(0) for p in range(self.permute_number)]),0)  # PN x H x H
         self.batchnorm1 = nn.BatchNorm1d(hidden_size)
         self.batchnorm2 = nn.BatchNorm1d(hidden_size)
@@ -142,13 +144,13 @@ class Generator(nn.Module):
         # pdb.set_trace()
         # x = torch.max(x,2)[0]
         x = xs.permute((1,2,0))
-        x = self.batchnorm1(self.pool(x)).sum(2)
+        x = self.batchnorm2(self.pool(x)).sum(2)
         x = F.leaky_relu(self.map2(x))
         x = self.batchnorm3(self.map3(x))
-        return F.leaky_relu(self.map4(F.elu(x)),1e-3), x
+        return F.leaky_relu(self.map4(F.elu(x)),1e-2), x
 
     def lastlayer(self, x):
-        return F.leaky_relu(self.map4(F.elu(x)),1e-3)
+        return F.leaky_relu(self.map4(F.elu(x)),1e-2)
 
     
 class Discriminator(nn.Module):
@@ -224,13 +226,18 @@ CE = nn.CrossEntropyLoss()
 MSE = nn.MSELoss()
 # d_optimizer = optim.Adam(D.parameters(), lr=d_learning_rate, betas=optim_betas, weight_decay=1e-6)
 d_optimizer = optim.RMSprop(D.parameters(), lr=d_learning_rate)  # , weight_decay=1e-3)
-g_optimizer = optim.Adam(G.parameters(), lr=g_learning_rate, betas=optim_betas)
+g_optimizer = optim.Adam(G.parameters(), lr=g_learning_rate, betas=optim_betas, weight_decay=1e-6)
 i_optimizer = optim.RMSprop(itertools.chain(G.parameters(), D.parameters()), lr=i_learning_rate)
 
 myanchors = Variable(gi_sampler(data_size, g_input_size))
 
 
 for epoch in range(num_epochs):
+    g_minibatch_epoch_indices = \
+        torch.LongTensor(
+            np.random.choice(data_size,
+                             size=minibatch_size*g_anchor_steps).reshape(g_anchor_steps,-1)
+            )
     
     for d_index in range(d_steps):
         if anchor_only and epoch > 0:
@@ -259,8 +266,10 @@ for epoch in range(num_epochs):
         # 2B: Train G on anchors (random noise that maps to the data distribution)
 
         g_fake_anchor_output, _ = G(myanchors)
-        g_minibatch_indices = np.random.choice(data_size, size=minibatch_size)
-        g_anchor_loss = MSE(g_fake_anchor_output[g_minibatch_indices,:], Variable(mydata[g_minibatch_indices,:]))
+        # g_minibatch_indices = np.random.choice(data_size, size=minibatch_size)
+        g_minibatch_indices = g_minibatch_epoch_indices[g_index,:]
+        g_anchor_loss = MSE(g_fake_anchor_output[g_minibatch_indices,:],
+                            Variable(mydata[g_minibatch_indices,:]))
         g_anchor_loss.backward(retain_graph=True)
         g_optimizer.step()  # Only optimizes G's parameters
         
@@ -304,8 +313,8 @@ for epoch in range(num_epochs):
         plt.imshow(subsample(G(Variable(gi_sampler(data_size, g_input_size)))[0].data.numpy(),subsample_stride=subsample_stride))
         plt.xlabel('Mime, permuted')
         plt.subplot(142)
-        plt.imshow(subsample(mydata[np.random.choice(mydata.shape[0], size=mydata.shape[0], replace=False),:], subsample_stride=subsample_stride))
-        plt.xlabel('Truth, permuted')
+        plt.imshow(subsample(mydata[np.random.choice(mydata.shape[0], size=mydata.shape[0], replace=True),:], subsample_stride=subsample_stride))
+        plt.xlabel('Truth sampled, permuted')
         plt.subplot(143)
         plt.imshow(subsample(g_fake_anchor_output.data.numpy(), subsample_stride=subsample_stride))
         plt.xlabel('Mime, anchored')
@@ -314,15 +323,15 @@ for epoch in range(num_epochs):
         plt.xlabel('Truth')
         plt.colorbar()
         plt.subplots_adjust(wspace=0.00)
-        plt.savefig('images/gan_' + str(dt.datetime.now()) + '.svg', format="svg"); plt.clf() 
+        plt.savefig('images/gan_' + suffix + '_' + str(dt.datetime.now()) + '.svg', format="svg"); plt.clf() 
 
         
 plt.imshow(mydata)
 plt.colorbar()
-plt.savefig('images/gan_' + str(dt.datetime.now()) + '_truth.svg', format="svg"); plt.clf() 
+plt.savefig('images/gan_' + suffix + '_' + str(dt.datetime.now()) + '_truth.svg', format="svg"); plt.clf() 
 plt.imshow(mydata[np.random.choice(mydata.shape[0], size=mydata.shape[0], replace=False),:])
 plt.colorbar()
-plt.savefig('images/gan_' + str(dt.datetime.now()) + '_jumbled_truth.svg', format="svg"); plt.clf() 
+plt.savefig('images/gan_' + suffix + '_' + str(dt.datetime.now()) + '_jumbled_truth.svg', format="svg"); plt.clf() 
 
 
 ### Extract clusters based on noise process from the last layer
