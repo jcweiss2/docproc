@@ -19,14 +19,18 @@ class DocProcDrugDataset(Dataset):
     def __len__(self):
         return len(self.metacsv)
 
-    def __getitem__(self, idx, delimiter=','):
+    def __getitem__(self, idx, delimiter=',', skip=3, cuda=True, zero_column_long=False):
         ex_name = os.path.join(self.root_dir,
                                self.prefix + str(self.metacsv.iloc[idx,0]) +
-                               self.suffix
-        )
-        ex_datum = pd.read_csv(ex_name,header=None).as_matrix()
+                               self.suffix)
+        ex_datum = torch.from_numpy(pd.read_csv(ex_name,header=None).as_matrix())
+        if zero_column_long:
+            return ex_datum[:,skip]
+        # if cuda:
+        #     ex_datum = ex_datum.cuda()
+        ex_datum = torch.log(1+ex_datum.float())
         # ex_datum = np.genfromtxt(ex_name, delimiter=delimiter)
-        return ex_datum[:,1:]
+        return ex_datum[:,skip:]  # current version has [uid, uid, npi, ...data]
 
 
 def split_csv(data, out_dir, out_prefix, suffix='.txt', batch_size=64):
@@ -43,27 +47,29 @@ def split_csv(data, out_dir, out_prefix, suffix='.txt', batch_size=64):
     return
 
 
-### Maker
-# data_name = 'medicare/docprocdrug2.csv'
-# data = pd.read_csv(data_name)  # , nrows=100)
-# split_csv(data, 'medicare/parts_docprocdrug/','dpd')
+if __name__ == "__main__":
 
-# ### User
-data_dir = 'medicare/parts_docprocdrug'
-dpdd = DocProcDrugDataset('medicare/parts_docprocdrug',
-                          'dpd')
-# ### Iteratively
-# # for i in np.arange(len(dpdd)):
-# #     print(dpdd[i])
-# ### With a data loader
-# dataloader = DataLoader(dpdd, batch_size=128, shuffle=True, num_workers=16)
-# for i, s in enumerate(dataloader):
-#     print(i, s.shape)
-# ### With a data loader mixing
-dataloader = DataLoader(dpdd, batch_size=32, shuffle=True, num_workers=30)
-for i, s in enumerate(dataloader):
-    # print(i, s.shape)
-    print(i, s.cuda().  # .permute(2,0,1).contiguous().
-          view(-1, 32*64).t().float().mean(1)[:10])
-
+    ### Maker
+    # data_name = 'medicare/docprocdrug2.csv'
+    # data = pd.read_csv(data_name)  # , nrows=100)
+    # split_csv(data, 'medicare/parts_docprocdrug/','dpd')
+    
+    # ### User
+    data_dir = 'medicare/parts_docprocdrug'
+    dpdd = DocProcDrugDataset('medicare/parts_docprocdrug',
+                              'dpd')
+    # ### Iteratively
+    # # for i in np.arange(len(dpdd)):
+    # #     print(dpdd[i])
+    # ### With a data loader
+    # dataloader = DataLoader(dpdd, batch_size=128, shuffle=True, num_workers=16)
+    # for i, s in enumerate(dataloader):
+    #     print(i, s.shape)
+    # ### With a data loader mixing
+    dataloader = DataLoader(dpdd, batch_size=32, shuffle=True, num_workers=30)
+    for i, s in enumerate(dataloader):
+        # print(i, s.shape)
+        print(i, s.cuda().  # .permute(2,0,1).contiguous().
+              view(32*64, -1).float().mean(1)[:10])
+        
 
