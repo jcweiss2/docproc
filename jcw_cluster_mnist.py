@@ -549,13 +549,22 @@ while ncs > desired_centroids and len(np.unique(merged_assignments)) > desired_c
         unique_mas[merger[0]]
 print(np.bincount(merged_assignments.astype(int)))
 
+
+mydata = torch.zeros(len(mdata),o_output_size)
+i0 = 0
+for i, mybatch in enumerate(dataloader_fixed):
+    i1 = i0 + len(mybatch[0])
+    mydata[i0:i1] = mybatch[0].squeeze()
+    i0 = i1
+
 ### Get hidden:
-# hiddenVectors = np.zeros((mynoise.shape[0], hidden_size))
-# for i0, i1 in arangeIntervals(data_size, 100):
-#     hiddenVectors[i0:i1] = Gen(mynoise[i0:i1].cuda()).cpu().data.numpy()
+hiddenVectors = np.zeros((mydata.shape[0], hidden_size))
+for i0, i1 in arangeIntervals(data_size, 100):
+    hiddenVectors[i0:i1] = Gen(mydata[i0:i1].cuda()).cpu().data.numpy()
 # npihiddendf = pd.DataFrame(hiddenVectors)
 # TODO fix
-npihiddendf['truth'] = truths
+npihiddendf = pd.DataFrame({'truth':truths})
+# npihiddendf['truth'] = truths
 npihiddendf['cluster'] = assignments
 npihiddendf['cluster_merged'] = merged_assignments
 npihiddendf.to_csv(prefix + 'hidden.csv')
@@ -568,27 +577,33 @@ summ['Ours merged'] = [adjusted_rand_score(truths, merged_assignments),
 print(summ)
 summ.to_csv(prefix + 'summary.csv')
 
+    
+# Get kmeans
+from sklearn.cluster import MiniBatchKMeans
+mydatanumpy = mydata.cpu().data.numpy()
+kmeans = MiniBatchKMeans(n_clusters=desired_centroids).fit(mydatanumpy)
+assignments_kmeans = kmeans.labels_
+npidf = pd.DataFrame({'truth':truths,
+                      'cluster':assignments_kmeans})
+npidf.to_csv(prefix + 'clusters_kmeans.csv')
 
 
-# # Get kmeans
-# from sklearn.cluster import MiniBatchKMeans
-# mydatanumpy = mydata.cpu().data.numpy()
-# kmeans = MiniBatchKMeans(n_clusters=desired_centroids).fit(mydatanumpy)
-# assignments_kmeans = kmeans.labels_
-# npidf = pd.DataFrame({'truth':mydatadf['npi'],
-#                       'cluster':assignments_kmeans})
-# npidf.to_csv(prefix + 'clusters_kmeans.csv')
+# Get hidden kmeans
+hiddenkmeans = MiniBatchKMeans(n_clusters=desired_centroids).fit(hiddenVectors)
+assignments_hidden_kmeans = hiddenkmeans.labels_
+npidf = pd.DataFrame({'truth':truths,
+                      'cluster':assignments_hidden_kmeans})
+npidf.to_csv(prefix + 'clusters_hidden_kmeans.csv')
 
+summ['Kmeans'] = [adjusted_rand_score(truths, assignments_kmeans),
+                  adjusted_mutual_info_score(truths, assignments_kmeans)]
+summ['Hidden Kmeans'] = [adjusted_rand_score(truths, assignments_hidden_kmeans),
+                         adjusted_mutual_info_score(truths, assignments_hidden_kmeans)]
+print(summ)
+summ.to_csv(prefix + 'summary.csv')
 
-# # Get hidden kmeans
-# hiddenkmeans = MiniBatchKMeans(n_clusters=desired_centroids).fit(hiddenVectors)
-# assignments_hidden_kmeans = hiddenkmeans.labels_
-# npidf = pd.DataFrame({'truth':mydatadf['npi'],
-#                       'cluster':assignments_hidden_kmeans})
-# npidf.to_csv(prefix + 'clusters_hidden_kmeans.csv')
-
-# # Get our method
-# npidf = pd.DataFrame({'truth':mydatadf['npi'],
+# Get our method
+# npidf = pd.DataFrame({'truth':truths,
 #                       'cluster':assignments})
 # npidf.to_csv(prefix + 'clusters_ours.csv')
 
