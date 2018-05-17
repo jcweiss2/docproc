@@ -1,4 +1,6 @@
 # Generative Adversarial Networks (GAN) example in PyTorch.
+import torch.multiprocessing as mp
+mp.set_start_method('spawn')
 import numpy as np
 import itertools
 import torch
@@ -17,6 +19,7 @@ from sklearn.cluster import DBSCAN, AffinityPropagation, AgglomerativeClustering
 from sklearn import metrics
 import pandas as pd
 import datetime as dt
+from jcw_utils import logandwide
 
 # Data params
 # data_mean = 4
@@ -45,7 +48,7 @@ o_learning_rate = 1e-4  # 2e-4
 g_learning_rate = 1e-5
 c_learning_rate = 1e-3
 # optim_betas = (0.9, 0.999)
-num_epochs = 2000
+num_epochs = 500
 burn_in = 0
 print_interval = 1
 mbi_print_interval = 10000
@@ -59,6 +62,7 @@ suffix = ''
 
 # gpu-mode
 gpu_mode = True
+device = 'cuda' if gpu_mode else 'cpu'
     
 ### My data not theirs.
 # mydata = torch.Tensor(np.zeros((data_size,g_output_size)))
@@ -71,7 +75,7 @@ gpu_mode = True
 #     mydata[xlb:xub,ylb:yub] = torch.Tensor(np.random.poisson(np.random.randint(10), size=(xub-xlb, yub-ylb)))
 # mydata = mydata.clone()
 
-desired_centroids = 25
+desired_centroids = 10
 noise_sd = 1./100
 explode_factor = 10000
 
@@ -81,15 +85,8 @@ if 'docproc_random_seed' in globals():
 else:
     torch.manual_seed(42)
 
-    
-class logandwide(object):
-    def __init__(self):
-        return
 
-    def __call__(self, x):
-        return torch.log(1+x).reshape(1,-1)
-
-    
+law = logandwide()
 # mydatasize = torch.Size((1000, 1000))
 # centroidsize = torch.Size((desired_centroids, mydatasize[1]))
 # centroids = F.normalize(torch.FloatTensor(centroidsize).normal_(),2,1)
@@ -106,8 +103,8 @@ class logandwide(object):
 from torchvision.datasets import MNIST
 from torch.utils.data import Dataset, DataLoader
 from torchvision.transforms import ToTensor, Compose
-mdata = MNIST('mnist/', train=True, download=True, transform=Compose([ToTensor(), logandwide()]))
-mloader = DataLoader(mdata, batch_size=32, shuffle=True)
+mdata = MNIST('mnist/', train=True, download=True, transform=Compose([ToTensor(), law]))
+mloader = DataLoader(mdata, batch_size=32, shuffle=True, num_workers=30)
 
 # mydatadf = pd.DataFrame(mydata.data.numpy())
 # mydatadf['npi'] = true_assignments
@@ -476,15 +473,32 @@ for epoch in range(num_epochs):
         print("%s: [H: %8.6f;  s: %8.6f]; [O: %8.6f; e: %8.6f]; C: %8.6g" %
               (epoch, el[0], el[1], el[2], el[3], el[4]))
             
-                
+        
+dataloader_fixed = DataLoader(mdata, batch_size=64, shuffle=False, num_workers=30)
 Gen = Gen.eval()
-assignments = np.zeros(len(mdata))
-for i0, i1 in arangeIntervals(data_size, 100):
+assignments = np.zeros(data_size).astype(int)
+i0 = 0
+for i, mybatch in enumerate(dataloader_fixed):
+    mynoise = mybatch[0].cuda().view(-1, mybatch[0].size()[2])
+    i1 = i0+mynoise.size()[0]
     assignments[i0:i1] = np.argmax(
-        Clu( Gen( mynoise[i0:i1].cuda() )[:,side_channel_size:] ).\
+        Clu(Gen(mynoise)[:,side_channel_size:]).
         cpu().data.numpy(), axis=1)
+    i0 = i1
     # for i0, i1 in arangeIntervals(data_size, minibatch_size):
 print(np.bincount(assignments.astype(int)))
+
+
+truths = np.zeros(data_size)
+i0 = 0
+for i, mybatch in enumerate(dataloader_fixed):
+    nextset = mybatch[1]
+    i1 = i0 + len(nextset)
+    truths[i0:i1] = nextset.detach().numpy()
+    i0 = i1
+    # for i0, i1 in arangeIntervals(data_size, minibatch_size):
+print(np.bincount(truths.astype(int)))
+
 
 prefix = 'mnist_' + str(dt.datetime.now()) + \
          '_centroids' + str(desired_centroids) + '_'
@@ -493,93 +507,148 @@ prefix = 'mnist_' + str(dt.datetime.now()) + \
 #                       'cluster':assignments})
 # npidf.to_csv('180422clusters40.csv')
 
-# Get hidden:
-hiddenVectors = np.zeros((mynoise.shape[0], hidden_size))
-for i0, i1 in arangeIntervals(data_size, 100):
-    hiddenVectors[i0:i1] = Gen(mynoise[i0:i1].cuda()).cpu().data.numpy()
-npihiddendf = pd.DataFrame(hiddenVectors)
-npihiddendf['truth'] = mydatadf['npi']
-npihiddendf.to_csv(prefix + 'hidden.csv')
-
-# Get kmeans
-from sklearn.cluster import MiniBatchKMeans
-mydatanumpy = mydata.cpu().data.numpy()
-kmeans = MiniBatchKMeans(n_clusters=desired_centroids).fit(mydatanumpy)
-assignments_kmeans = kmeans.labels_
-npidf = pd.DataFrame({'truth':mydatadf['npi'],
-                      'cluster':assignments_kmeans})
-npidf.to_csv(prefix + 'clusters_kmeans.csv')
 
 
-# Get hidden kmeans
-hiddenkmeans = MiniBatchKMeans(n_clusters=desired_centroids).fit(hiddenVectors)
-assignments_hidden_kmeans = hiddenkmeans.labels_
-npidf = pd.DataFrame({'truth':mydatadf['npi'],
-                      'cluster':assignments_hidden_kmeans})
-npidf.to_csv(prefix + 'clusters_hidden_kmeans.csv')
-
-# Get our method
-npidf = pd.DataFrame({'truth':mydatadf['npi'],
-                      'cluster':assignments})
-npidf.to_csv(prefix + 'clusters_ours.csv')
-
-# Get our method merged  # Post process merge clusters
 print('Post-process to get k clusters: ', len(np.unique(assignments)), ' -> ', desired_centroids)
-mydata = mydata.cuda()
+# mydata = mydata.cuda()
 ncs = c_output_size
-merged_assignments = assignments.copy()
-sim_dim = 100
+merged_assignments = assignments.copy().astype(int)
 while ncs > desired_centroids and len(np.unique(merged_assignments)) > desired_centroids:
     unique_mas = np.unique(merged_assignments)
     n_mas = len(unique_mas)
-    approx_similarity = Variable(torch.FloatTensor(torch.Size((n_mas,n_mas))))
-    for i in np.arange(n_mas):
-        for j in np.arange(n_mas):
-            i_indices = np.random.choice(np.where(merged_assignments == unique_mas[i])[0], sim_dim)
-            j_indices = np.random.choice(np.where(merged_assignments == unique_mas[j])[0], sim_dim)
-            approx_similarity[i,j] = F.normalize(mydata[i_indices,:],2,1).matmul(
-                F.normalize(mydata[j_indices,:],2,1).t()).mean()
-            approx_similarity[j,i] = 0
-    merger = np.unravel_index(approx_similarity.cpu().data.numpy().argmax(),approx_similarity.size())
-    merged_assignments[np.where(merged_assignments == unique_mas[merger[1]])[0]] = unique_mas[merger[0]]
-    ncs -= 1
+    numer, denom = torch.zeros(n_mas, n_mas), torch.zeros(n_mas, n_mas)
+    i0 = 0
+    for i, mybatch in enumerate(dataloader_fixed):
+        mynoise = mybatch[0].to(device).view(-1, mybatch[0].size()[2]).contiguous()
+        i1 = i0+mynoise.size()[0]
+        clusters = Clu(Gen(mynoise)[:,side_channel_size:])
+        cossims = batch_cosine(torch.sqrt(clusters+1e-10), normalize=False).cpu()
+        mas = merged_assignments[i0:i1]
+        uvals, uidx = np.unique(mas,return_inverse=True)
+        um_mat = torch.sparse.FloatTensor(torch.LongTensor([uidx.tolist(),
+                                                            np.arange(len(uidx)).tolist()]),
+                                          torch.ones(len(uidx))).to_dense().t()
+        isin = np.isin(unique_mas, uvals)
+        expander = torch.sparse.FloatTensor(torch.LongTensor([np.where(isin == 1)[0].tolist(),
+                                                              np.arange(sum(isin)).tolist()]),
+                                            torch.ones(len(uvals)),
+                                            torch.Size((n_mas, len(uvals)))).to_dense().t()
+        
+        numerBatch = (cossims-torch.diag(torch.ones(len(mas)))).matmul(um_mat).t().matmul(um_mat)
+        numer = numer + numerBatch.matmul(expander).t().matmul(expander)
+        denomBatch =       (1-torch.diag(torch.ones(len(mas)))).matmul(um_mat).t().matmul(um_mat)
+        denom = denom + denomBatch.matmul(expander).t().matmul(expander)
+        i0 = i1
+        # pdb.set_trace()
+    approx_similarity = numer/(denom + 1e-8) * (1-torch.diag(torch.ones(n_mas)))
+    print(n_mas)
+    # pdb.set_trace()
+    merger = np.unravel_index(approx_similarity.data.cpu().numpy().argmax(),
+                              approx_similarity.data.cpu().numpy().shape)
+    merged_assignments[np.where(merged_assignments == unique_mas[merger[1]])[0]] = \
+        unique_mas[merger[0]]
 print(np.bincount(merged_assignments.astype(int)))
-npidf = pd.DataFrame({'truth':mydatadf['npi'],
-                      'cluster':merged_assignments})
-npidf.to_csv(prefix + 'clusters_ours_merged.csv')
 
-# Original data
-mydatadf.rename(columns={'npi':'truth'}).to_csv(prefix + 'original.csv')
-
-
-# Performance summary
+### Get hidden:
+# hiddenVectors = np.zeros((mynoise.shape[0], hidden_size))
+# for i0, i1 in arangeIntervals(data_size, 100):
+#     hiddenVectors[i0:i1] = Gen(mynoise[i0:i1].cuda()).cpu().data.numpy()
+# npihiddendf = pd.DataFrame(hiddenVectors)
+# TODO fix
+npihiddendf['truth'] = truths
+npihiddendf['cluster'] = assignments
+npihiddendf['cluster_merged'] = merged_assignments
+npihiddendf.to_csv(prefix + 'hidden.csv')
 summ = pd.DataFrame({'Measure':pd.Series(['ARI','NMI'])})
 from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, silhouette_score
-summ['Ours'] = [adjusted_rand_score(true_assignments, assignments),
-                adjusted_mutual_info_score(true_assignments, assignments)]
-summ['Ours merged'] = [adjusted_rand_score(true_assignments, merged_assignments),
-                       adjusted_mutual_info_score(true_assignments, merged_assignments)]
-summ['Kmeans'] = [adjusted_rand_score(true_assignments, assignments_kmeans),
-                  adjusted_mutual_info_score(true_assignments, assignments_kmeans)]
-summ['Hidden Kmeans'] = [adjusted_rand_score(true_assignments, assignments_hidden_kmeans),
-                         adjusted_mutual_info_score(true_assignments, assignments_hidden_kmeans)]
+summ['Ours'] = [adjusted_rand_score(truths, assignments),
+                adjusted_mutual_info_score(truths, assignments)]
+summ['Ours merged'] = [adjusted_rand_score(truths, merged_assignments),
+                adjusted_mutual_info_score(truths, merged_assignments)]
 print(summ)
 summ.to_csv(prefix + 'summary.csv')
 
 
-# summ = pd.DataFrame({'Measure':pd.Series(['ARI','NMI','Silhouette'])})
+
+# # Get kmeans
+# from sklearn.cluster import MiniBatchKMeans
+# mydatanumpy = mydata.cpu().data.numpy()
+# kmeans = MiniBatchKMeans(n_clusters=desired_centroids).fit(mydatanumpy)
+# assignments_kmeans = kmeans.labels_
+# npidf = pd.DataFrame({'truth':mydatadf['npi'],
+#                       'cluster':assignments_kmeans})
+# npidf.to_csv(prefix + 'clusters_kmeans.csv')
+
+
+# # Get hidden kmeans
+# hiddenkmeans = MiniBatchKMeans(n_clusters=desired_centroids).fit(hiddenVectors)
+# assignments_hidden_kmeans = hiddenkmeans.labels_
+# npidf = pd.DataFrame({'truth':mydatadf['npi'],
+#                       'cluster':assignments_hidden_kmeans})
+# npidf.to_csv(prefix + 'clusters_hidden_kmeans.csv')
+
+# # Get our method
+# npidf = pd.DataFrame({'truth':mydatadf['npi'],
+#                       'cluster':assignments})
+# npidf.to_csv(prefix + 'clusters_ours.csv')
+
+# # Get our method merged  # Post process merge clusters
+# print('Post-process to get k clusters: ', len(np.unique(assignments)), ' -> ', desired_centroids)
+# mydata = mydata.cuda()
+# ncs = c_output_size
+# merged_assignments = assignments.copy()
+# sim_dim = 100
+# while ncs > desired_centroids and len(np.unique(merged_assignments)) > desired_centroids:
+#     unique_mas = np.unique(merged_assignments)
+#     n_mas = len(unique_mas)
+#     approx_similarity = Variable(torch.FloatTensor(torch.Size((n_mas,n_mas))))
+#     for i in np.arange(n_mas):
+#         for j in np.arange(n_mas):
+#             i_indices = np.random.choice(np.where(merged_assignments == unique_mas[i])[0], sim_dim)
+#             j_indices = np.random.choice(np.where(merged_assignments == unique_mas[j])[0], sim_dim)
+#             approx_similarity[i,j] = F.normalize(mydata[i_indices,:],2,1).matmul(
+#                 F.normalize(mydata[j_indices,:],2,1).t()).mean()
+#             approx_similarity[j,i] = 0
+#     merger = np.unravel_index(approx_similarity.cpu().data.numpy().argmax(),approx_similarity.size())
+#     merged_assignments[np.where(merged_assignments == unique_mas[merger[1]])[0]] = unique_mas[merger[0]]
+#     ncs -= 1
+# print(np.bincount(merged_assignments.astype(int)))
+# npidf = pd.DataFrame({'truth':mydatadf['npi'],
+#                       'cluster':merged_assignments})
+# npidf.to_csv(prefix + 'clusters_ours_merged.csv')
+
+# # Original data
+# mydatadf.rename(columns={'npi':'truth'}).to_csv(prefix + 'original.csv')
+
+
+# # Performance summary
+# summ = pd.DataFrame({'Measure':pd.Series(['ARI','NMI'])})
 # from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, silhouette_score
 # summ['Ours'] = [adjusted_rand_score(true_assignments, assignments),
-#                 adjusted_mutual_info_score(true_assignments, assignments),
-#                 silhouette_score(mydata, assignments, metric='cosine')]
+#                 adjusted_mutual_info_score(true_assignments, assignments)]
 # summ['Ours merged'] = [adjusted_rand_score(true_assignments, merged_assignments),
-#                        adjusted_mutual_info_score(true_assignments, merged_assignments),
-#                        silhouette_score(mydata, merged_assignments, metric='cosine')]
+#                        adjusted_mutual_info_score(true_assignments, merged_assignments)]
 # summ['Kmeans'] = [adjusted_rand_score(true_assignments, assignments_kmeans),
-#                   adjusted_mutual_info_score(true_assignments, assignments_kmeans),
-#                   silhouette_score(mydata, assignments_kmeans, metric='cosine')]
+#                   adjusted_mutual_info_score(true_assignments, assignments_kmeans)]
 # summ['Hidden Kmeans'] = [adjusted_rand_score(true_assignments, assignments_hidden_kmeans),
-#                          adjusted_mutual_info_score(true_assignments, assignments_hidden_kmeans),
-#                          silhouette_score(mydata, assignments_hidden_kmeans, metric='cosine')]
+#                          adjusted_mutual_info_score(true_assignments, assignments_hidden_kmeans)]
 # print(summ)
 # summ.to_csv(prefix + 'summary.csv')
+
+
+# # summ = pd.DataFrame({'Measure':pd.Series(['ARI','NMI','Silhouette'])})
+# # from sklearn.metrics import adjusted_rand_score, adjusted_mutual_info_score, silhouette_score
+# # summ['Ours'] = [adjusted_rand_score(true_assignments, assignments),
+# #                 adjusted_mutual_info_score(true_assignments, assignments),
+# #                 silhouette_score(mydata, assignments, metric='cosine')]
+# # summ['Ours merged'] = [adjusted_rand_score(true_assignments, merged_assignments),
+# #                        adjusted_mutual_info_score(true_assignments, merged_assignments),
+# #                        silhouette_score(mydata, merged_assignments, metric='cosine')]
+# # summ['Kmeans'] = [adjusted_rand_score(true_assignments, assignments_kmeans),
+# #                   adjusted_mutual_info_score(true_assignments, assignments_kmeans),
+# #                   silhouette_score(mydata, assignments_kmeans, metric='cosine')]
+# # summ['Hidden Kmeans'] = [adjusted_rand_score(true_assignments, assignments_hidden_kmeans),
+# #                          adjusted_mutual_info_score(true_assignments, assignments_hidden_kmeans),
+# #                          silhouette_score(mydata, assignments_hidden_kmeans, metric='cosine')]
+# # print(summ)
+# # summ.to_csv(prefix + 'summary.csv')

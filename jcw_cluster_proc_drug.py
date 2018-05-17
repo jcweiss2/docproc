@@ -49,7 +49,7 @@ o_learning_rate = 1e-4  # 2e-4
 g_learning_rate = 1e-5
 c_learning_rate = 1e-3
 # optim_betas = (0.9, 0.999)
-num_epochs = 100
+num_epochs = 50
 burn_in = 0
 print_interval = 1
 mbi_print_interval = 30
@@ -63,6 +63,7 @@ suffix = ''
 
 # gpu-mode
 gpu_mode = True
+device = 'cuda' if gpu_mode else 'cpu'
     
 ### My data not theirs.
 # mydata = torch.Tensor(np.zeros((data_size,g_output_size)))
@@ -110,7 +111,7 @@ gpu_mode = True
 mydataset = jmp.DocProcDrugDataset('medicare/parts_docprocdrug','dpd')
 dataloader = DataLoader(mydataset, batch_size=32, shuffle=True, num_workers=31)
 
-desired_centroids = 50
+desired_centroids = 40
 
 g_input_size = 1024  # noise input size
 hidden_size = 128  # latent space size
@@ -473,7 +474,7 @@ for epoch in range(num_epochs):
     data_size = dcounter
 
 dataloader_fixed = DataLoader(mydataset, batch_size=64, shuffle=False, num_workers=31)
-# Gen = Gen.eval()
+Gen = Gen.eval()
 assignments = np.zeros(data_size)
 i0 = 0
 for i, mybatch in enumerate(dataloader_fixed):
@@ -501,13 +502,20 @@ pd.DataFrame({'npi':npis2,'cluster':assignments}).to_csv('outputs/'+prefix+str(d
 #                       'cluster':assignments})
 # npidf.to_csv('180422clusters40.csv')
 
-# # Get hidden:
-# hiddenVectors = np.zeros((mynoise.shape[0], hidden_size))
-# for i0, i1 in arangeIntervals(data_size, 100):
-#     hiddenVectors[i0:i1] = Gen(mynoise[i0:i1].cuda()).cpu().data.numpy()
-# npihiddendf = pd.DataFrame(hiddenVectors)
-# npihiddendf['truth'] = mydatadf['npi']
-# npihiddendf.to_csv(prefix + 'hidden.csv')
+# Get hidden:
+hiddenVectors = np.zeros((data_size, hidden_size))
+i0 = 0
+for i, mybatch in enumerate(dataloader_fixed):
+    mynoise = mybatch.cuda().view(-1, mybatch.size()[2])
+    i1 = i0+mynoise.size()[0]
+    hiddenVectors[i0:i1] = Gen(mynoise).cpu().data.numpy()
+    # assignments[i0:i1] = np.argmax(
+    #     Clu(Gen(mynoise)[:,side_channel_size:]).
+    #     cpu().data.numpy(), axis=1)
+    i0 = i1
+npihiddendf = pd.DataFrame(hiddenVectors)
+npihiddendf.insert(loc=0, column='npi', value=npis2)
+npihiddendf.to_csv(prefix + str(dt.datetime.now()) + 'hidden.csv')
 
 # # Get kmeans
 # from sklearn.cluster import MiniBatchKMeans
@@ -531,25 +539,47 @@ pd.DataFrame({'npi':npis2,'cluster':assignments}).to_csv('outputs/'+prefix+str(d
 #                       'cluster':assignments})
 # npidf.to_csv(prefix + 'clusters_ours.csv')
 
-# # Get our method merged  # Post process merge clusters
-# print('Post-process to get k clusters: ', len(np.unique(assignments)), ' -> ', desired_centroids)
+# Get our method merged  # Post process merge clusters
+print('Post-process to get k clusters: ', len(np.unique(assignments)), ' -> ', desired_centroids)
 # mydata = mydata.cuda()
-# ncs = c_output_size
-# merged_assignments = assignments.copy()
-# sim_dim = 100
-# while ncs > desired_centroids and len(np.unique(merged_assignments)) > desired_centroids:
-#     unique_mas = np.unique(merged_assignments)
-#     n_mas = len(unique_mas)
-#     approx_similarity = Variable(torch.FloatTensor(torch.Size((n_mas,n_mas))))
-#     for i in np.arange(n_mas):
-#         for j in np.arange(n_mas):
-#             i_indices = np.random.choice(np.where(merged_assignments == unique_mas[i])[0], sim_dim)
-#             j_indices = np.random.choice(np.where(merged_assignments == unique_mas[j])[0], sim_dim)
-#             approx_similarity[i,j] = F.normalize(mydata[i_indices,:],2,1).matmul(
-#                 F.normalize(mydata[j_indices,:],2,1).t()).mean()
-#             approx_similarity[j,i] = 0
-#     merger = np.unravel_index(approx_similarity.cpu().data.numpy().argmax(),approx_similarity.size())
-#     merged_assignments[np.where(merged_assignments == unique_mas[merger[1]])[0]] = unique_mas[merger[0]]
+dataloader_fixed = DataLoader(mydataset, batch_size=64, shuffle=False, num_workers=8)
+ncs = c_output_size
+merged_assignments = assignments.copy().astype(int)
+while ncs > desired_centroids and len(np.unique(merged_assignments)) > desired_centroids:
+    unique_mas = np.unique(merged_assignments)
+    n_mas = len(unique_mas)
+    numer, denom = torch.zeros(n_mas, n_mas), torch.zeros(n_mas, n_mas)
+    i0 = 0
+    for i, mybatch in enumerate(dataloader_fixed):
+        mynoise = mybatch.to(device).view(-1, mybatch.size()[2]).contiguous()
+        i1 = i0+mynoise.size()[0]
+        clusters = Clu(Gen(mynoise)[:,side_channel_size:])
+        cossims = batch_cosine(torch.sqrt(clusters+1e-10), normalize=False).cpu()
+        mas = merged_assignments[i0:i1]
+        uvals, uidx = np.unique(mas,return_inverse=True)
+        um_mat = torch.sparse.FloatTensor(torch.LongTensor([uidx.tolist(),
+                                                            np.arange(len(uidx)).tolist()]),
+                                          torch.ones(len(uidx))).to_dense().t()
+        isin = np.isin(unique_mas, uvals)
+        expander = torch.sparse.FloatTensor(torch.LongTensor([np.where(isin == 1)[0].tolist(),
+                                                              np.arange(sum(isin)).tolist()]),
+                                            torch.ones(len(uvals)),
+                                            torch.Size((n_mas, len(uvals)))).to_dense().t()
+        
+        numerBatch = (cossims-torch.diag(torch.ones(len(mas)))).matmul(um_mat).t().matmul(um_mat)
+        numer = numer + numerBatch.matmul(expander).t().matmul(expander)
+        denomBatch =       (1-torch.diag(torch.ones(len(mas)))).matmul(um_mat).t().matmul(um_mat)
+        denom = denom + denomBatch.matmul(expander).t().matmul(expander)
+        i0 = i1
+        # pdb.set_trace()
+    approx_similarity = numer/(denom + 1e-8) * (1-torch.diag(torch.ones(n_mas)))
+    print(n_mas)
+    # pdb.set_trace()
+    merger = np.unravel_index(approx_similarity.data.cpu().numpy().argmax(),
+                              approx_similarity.data.cpu().numpy().shape)
+    merged_assignments[np.where(merged_assignments == unique_mas[merger[1]])[0]] = \
+        unique_mas[merger[0]]
+    
 #     ncs -= 1
 # print(np.bincount(merged_assignments.astype(int)))
 # npidf = pd.DataFrame({'truth':mydatadf['npi'],
