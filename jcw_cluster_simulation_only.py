@@ -57,7 +57,9 @@ image_interval = 16
 suffix = ''
 
 # gpu-mode
-gpu_mode = True
+# gpu_mode = True
+gpu_mode = torch.cuda.is_available()
+device = 'cuda' if gpu_mode else 'cpu'
     
 ### My data not theirs.
 # mydata = torch.Tensor(np.zeros((data_size,g_output_size)))
@@ -217,12 +219,24 @@ class Clusterer(nn.Module):
 
     
 class Outputter(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
+    def __init__(self, input_size, hidden_size, output_size, injectivity_by_positivity=False):
+        ''' Can get injectivity by strictly monotonicly increasing activations and positive definite matrix, and
+        a positive-element matrix is pd.
+        '''
         super(Outputter, self).__init__()
         self.map1 = nn.Linear(input_size, hidden_size)
         self.map2 = nn.Linear(hidden_size, hidden_size)
         self.map3 = nn.Linear(hidden_size, output_size)
-        
+        self.ibp = injectivity_by_positivity
+
+    def enforce_pd(self):
+        if self.ibp:
+            self.map1.weight.data.clamp_(min=1e-10)
+            self.map2.weight.data.clamp_(min=1e-10)
+            self.map3.weight.data.clamp_(min=1e-10)
+        else:
+            print('Error: only call enforce_pd when injectivity_by_positivity is activated')
+
     def forward(self, x):
         x = F.leaky_relu(self.map1(x))
         x = F.leaky_relu(self.map2(x))
@@ -231,13 +245,17 @@ class Outputter(nn.Module):
 
 
 class Enforcer(nn.Module):
-    def __init__(self, loss, similarity):
+    def __init__(self, loss, similarity, similarity2=None):
         super(Enforcer, self).__init__()
         self.loss = loss
         self.similarity = similarity
+        self.similarity2 = similarity2  # for t-SNE where similarities are normal- and t-
         
     def forward(self, x, y):
-        return self.loss(self.similarity(x), self.similarity(y))
+        if self.similarity2 is None:
+            return self.loss(self.similarity(x), self.similarity(y))
+        else:
+            return self.loss(self.similarity(x), self.similarity(y))
     
 
 # class Info(nn.Module):
@@ -285,6 +303,32 @@ def batch_cosine(data, normalize=True):
     return temp.matmul(temp.t())
 
 
+def tsne_functional(sigma2, dist='normal'):
+    '''
+    Traditionally sigma2 is determined by preprocessing to find perplexity.
+    '''
+    def tsne_similarity(data):
+        '''
+        Input: batch of hidden representations. Computes the Gaussian similarity for p_{i|j} and then averages p_{i|j} and p_{j|i}.
+        Returns: the log p_{ij} values
+        Note the t-sne formulation calculates p_{ij} up front, but this is not feasible when the number of datapoints is too large.
+        We approximate it batchwise instead
+        '''
+        if dist == 'normal':
+            numer = torch.exp(-data.matmul(data.t())/2/sigma2) - torch.eye(data.shape[0])
+        elif dist == 't':
+            numer = torch.pow(1 + data.matmul(data.t()), -1) - torch.eye(data.shape[0])
+        denom = numer.sum(1, keepdim=True)
+        numer = numer + torch.eye(data.shape[0])  # avoid negative infinities; diagonal is ignored in tsne_kl so long as not inf or nan
+        return torch.log(0.5 * (numer/denom + numer/denom.t()))
+    return tsne_similarity
+
+
+def tsne_kl(x, y):
+    ''' x and y are in log probability space; this ignores the diagonal '''
+    return ((torch.ones(x.shape[0]) - torch.eye(x.shape[0])) * (torch.exp(x) * (x - y))).sum()
+
+
 def arangeIntervals(stop, step):
     numbers = np.arange(stop, step=step)
     if np.any(numbers == stop):
@@ -298,12 +342,21 @@ def arangeIntervals(stop, step):
 mynoise = mydata  # autoencoder
 g_input_size = mynoise.shape[1]
 
+# outputter_enforce_pd = False
+outputter_enforce_pd = True  # if you want the outputter to be injective up to rank |H|
+outputter_enforce_pd_str = '' if not outputter_enforce_pd else '_pdon'
+
 # d_sampler = get_distribution_sampler(data_mean, data_stddev)
 gi_sampler = get_generator_input_sampler()
 Gen = Generator(input_size=g_input_size, hidden_size=g_output_size, output_size=g_output_size, hd=hd)
-Out = Outputter(input_size=o_input_size, hidden_size=o_hidden_size, output_size=o_output_size)
+Out = Outputter(input_size=o_input_size, hidden_size=o_hidden_size, output_size=o_output_size, injectivity_by_positivity=outputter_enforce_pd)
 Clu = Clusterer(input_size=c_input_size, hidden_size=c_hidden_size,output_size=c_output_size)
-Enf = Enforcer(nn.MSELoss(), batch_cosine)
+using_tsne = False
+Enf = Enforcer(nn.MSELoss(), batch_cosine)  # cosine sim
+# using_tsne = True
+# tsne_sigma2 = 1.0
+# using_tsne_str = '' if False else '_tsne' + str(tsne_sigma2)
+# Enf = Enforcer(tsne_kl, tsne_functional(tsne_sigma2, 'normal'), tsne_functional(np.nan, 't'))  # t-SNE objective
 
 tzero = Variable(torch.zeros(1))
 if gpu_mode:
@@ -342,7 +395,7 @@ c_only = False
 c_lambda = 1e-0
 c_l2_lambda = 1e-4
 c_e_lambda = 1e-4
-o_lambda = 1e-1
+o_lambda = 0  # 1e-1
 e_lambda = 1e-0
 s_lambda = 1e-4
 
@@ -360,6 +413,8 @@ for epoch in range(num_epochs):
             g_epoch_indices[i0:i1]
             # Variable(g_epoch_indices[i0:i1]).cuda()
         # torch.LongTensor(np.random.choice(data_size, size=minibatch_size))
+        if outputter_enforce_pd:
+            Out.enforce_pd()
     
         Gen.zero_grad()
         Out.zero_grad()
@@ -424,7 +479,7 @@ for epoch in range(num_epochs):
         else:
             c_loss = tzero
 
-        epoch_losses += torch.cat((g_loss, s_loss, o_alone, e_loss, c_loss))
+        epoch_losses += torch.stack((g_loss, s_loss, o_alone, e_loss, c_loss))
 
     if epoch % print_interval == 0:
         el = epoch_losses.cpu().data.numpy()
@@ -441,7 +496,7 @@ Gen = Gen.eval()
 assignments = np.zeros(mynoise.shape[0])
 for i0, i1 in arangeIntervals(data_size, 100):
     assignments[i0:i1] = np.argmax(
-        Clu( Gen( mynoise[i0:i1].cuda() )[:,side_channel_size:] ).\
+        Clu( Gen( mynoise[i0:i1].to(device) )[:,side_channel_size:] ).\
         cpu().data.numpy(), axis=1)
     # for i0, i1 in arangeIntervals(data_size, minibatch_size):
 print(np.bincount(assignments.astype(int)))
@@ -451,7 +506,10 @@ prefix = 'simulation_output' + str(dt.datetime.now()) + \
          '_samples' + str(mydatasize[0]) + \
          '_dims' + str(mydatasize[1]) + \
          '_sd' + str(noise_sd) + \
-         '_explode' + str(explode_factor) + '_'
+         '_explode' + str(explode_factor) + \
+         using_tsne_str + \
+         outputter_enforce_pd_str + \
+         '_'
 
 # npidf = pd.DataFrame({'npi':mydatadf['npi'],
 #                       'cluster':assignments})
@@ -460,7 +518,7 @@ prefix = 'simulation_output' + str(dt.datetime.now()) + \
 # Get hidden:
 hiddenVectors = np.zeros((mynoise.shape[0], hidden_size))
 for i0, i1 in arangeIntervals(data_size, 100):
-    hiddenVectors[i0:i1] = Gen(mynoise[i0:i1].cuda()).cpu().data.numpy()
+    hiddenVectors[i0:i1] = Gen(mynoise[i0:i1].to(device)).cpu().data.numpy()
 npihiddendf = pd.DataFrame(hiddenVectors)
 npihiddendf['truth'] = mydatadf['npi']
 npihiddendf.to_csv(prefix + 'hidden.csv')
@@ -489,7 +547,7 @@ npidf.to_csv(prefix + 'clusters_ours.csv')
 
 # Get our method merged  # Post process merge clusters
 print('Post-process to get k clusters: ', len(np.unique(assignments)), ' -> ', desired_centroids)
-mydata = mydata.cuda()
+mydata = mydata.to(device)
 ncs = c_output_size
 merged_assignments = assignments.copy()
 sim_dim = 100
