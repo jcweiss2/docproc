@@ -18,6 +18,10 @@ from sklearn import metrics
 import pandas as pd
 import datetime as dt
 
+
+np.random.seed(int(1e8+1))
+torch.manual_seed(1e8+1)
+
 # Data params
 # data_mean = 4
 # data_stddev = 1.25
@@ -77,7 +81,7 @@ noise_sd = 1./100
 explode_factor = 10000
 
 ### Synthetic data
-mydatasize = torch.Size((1000, 1000))
+mydatasize = torch.Size((1000, 100000))
 centroidsize = torch.Size((desired_centroids, mydatasize[1]))
 centroids = F.normalize(torch.FloatTensor(centroidsize).normal_(),2,1)
 mydata = torch.cat([torch.FloatTensor(torch.Size((int(mydatasize[0]/centroidsize[0]),
@@ -315,18 +319,21 @@ def tsne_functional(sigma2, dist='normal'):
         We approximate it batchwise instead
         '''
         if dist == 'normal':
-            numer = torch.exp(-data.matmul(data.t())/2/sigma2) - torch.eye(data.shape[0])
+            numer = torch.exp(-data.matmul(data.t())/2/sigma2) - torch.eye(data.shape[0]).to(data.device.type)
         elif dist == 't':
-            numer = torch.pow(1 + data.matmul(data.t()), -1) - torch.eye(data.shape[0])
+            numer = torch.pow(1 + data.matmul(data.t()), -1) - torch.eye(data.shape[0]).to(data.device.type)
         denom = numer.sum(1, keepdim=True)
-        numer = numer + torch.eye(data.shape[0])  # avoid negative infinities; diagonal is ignored in tsne_kl so long as not inf or nan
+        numer = numer + torch.eye(data.shape[0]).to(data.device.type)  # avoid negative infinities; diagonal is ignored in tsne_kl so long as not inf or nan
         return torch.log(0.5 * (numer/denom + numer/denom.t()))
     return tsne_similarity
 
 
 def tsne_kl(x, y):
     ''' x and y are in log probability space; this ignores the diagonal '''
-    return ((torch.ones(x.shape[0]) - torch.eye(x.shape[0])) * (torch.exp(x) * (x - y))).sum()
+    if torch.isnan(torch.exp(x)).any():
+        pdb.set_trace()
+        x = x.clamp(max=10)
+    return ((torch.ones(x.shape[0]).to(x.device.type) - torch.eye(x.shape[0]).to(x.device.type)) * (torch.exp(x) * (x - y))).sum()
 
 
 def arangeIntervals(stop, step):
@@ -342,8 +349,8 @@ def arangeIntervals(stop, step):
 mynoise = mydata  # autoencoder
 g_input_size = mynoise.shape[1]
 
-# outputter_enforce_pd = False
-outputter_enforce_pd = True  # if you want the outputter to be injective up to rank |H|
+outputter_enforce_pd = False
+# outputter_enforce_pd = True  # if you want the outputter to be injective up to rank |H|
 outputter_enforce_pd_str = '' if not outputter_enforce_pd else '_pdon'
 
 # d_sampler = get_distribution_sampler(data_mean, data_stddev)
@@ -351,12 +358,15 @@ gi_sampler = get_generator_input_sampler()
 Gen = Generator(input_size=g_input_size, hidden_size=g_output_size, output_size=g_output_size, hd=hd)
 Out = Outputter(input_size=o_input_size, hidden_size=o_hidden_size, output_size=o_output_size, injectivity_by_positivity=outputter_enforce_pd)
 Clu = Clusterer(input_size=c_input_size, hidden_size=c_hidden_size,output_size=c_output_size)
-using_tsne = False
-Enf = Enforcer(nn.MSELoss(), batch_cosine)  # cosine sim
-# using_tsne = True
-# tsne_sigma2 = 1.0
-# using_tsne_str = '' if False else '_tsne' + str(tsne_sigma2)
-# Enf = Enforcer(tsne_kl, tsne_functional(tsne_sigma2, 'normal'), tsne_functional(np.nan, 't'))  # t-SNE objective
+
+# using_tsne = False
+# Enf = Enforcer(nn.MSELoss(), batch_cosine)  # cosine sim
+using_tsne = True
+tsne_sigma2 = 1
+.0
+Enf = Enforcer(tsne_kl, tsne_functional(tsne_sigma2, 'normal'), tsne_functional(np.nan, 't'))  # t-SNE objective
+
+using_tsne_str = '' if using_tsne is False else '_tsne' + str(tsne_sigma2)
 
 tzero = Variable(torch.zeros(1))
 if gpu_mode:
@@ -376,28 +386,28 @@ g_optimizer = optim.Adam(Gen.parameters(), lr=g_learning_rate)
 # o_optimizer = optim.RMSprop(itertools.chain(Out.parameters(),Gen.parameters()),
 #                          lr=o_learning_rate)  # , weight_decay=1e-3)
 o_optimizer = optim.Adam(itertools.chain(Out.parameters(),Gen.parameters()),
-                         lr=o_learning_rate)  # , weight_decay=1e-3)
+                         lr=o_learning_rate, weight_decay=1e-8)  # , weight_decay=1e-3)
 c_optimizer = optim.Adam(itertools.chain(Gen.parameters(),Clu.parameters()), lr=c_learning_rate, weight_decay=1e-10)
 # c_optimizer = optim.Adam(itertools.chain(Gen.parameters(),Clu.parameters(), Out.parameters()), lr=c_learning_rate, weight_decay=1e-10)
 # i_optimizer = optim.RMSprop(itertools.chain(G.parameters(), D.parameters()), lr=i_learning_rate)
 
-alpha = 1e-6
+# alpha = 1e-6
 
 # if gpu_mode:
 #     mynoise = mynoise.cuda()
 #     mydata = mydata.cuda()
 
 pr_g_update = 1
-g_lambda = 1e-4
-g_o_ratio = 1e-1
+g_lambda = 1e-4  # hidden is on hypersphere
+g_o_ratio = 1e-1  
 pr_c_update = 1
 c_only = False
-c_lambda = 1e-0
-c_l2_lambda = 1e-4
-c_e_lambda = 1e-4
-o_lambda = 0  # 1e-1
-e_lambda = 1e-0
-s_lambda = 1e-4
+c_lambda = 1e-0  # clusters sqrt(p) match hidden angle
+c_l2_lambda = 0  # 1e-4  # cluster probabilities are l2 regularized
+c_e_lambda = 1e-4  # clusters probabilities are entropic
+o_lambda = 1e-1  # autoencoder
+e_lambda = 1e-0  # H and O similarity
+s_lambda = 0  # 1e-4  # spread out 
 
 # num_epochs = 1000
 # burn_in = 0
@@ -451,6 +461,7 @@ for epoch in range(num_epochs):
             o_loss += e_loss
             o_loss += g_loss + s_loss
             o_loss.backward()
+            [p.grad.clamp_(-1,1) for p in Gen.parameters() if p.grad is not None]
             o_optimizer.step()
         else:
             o_loss, e_loss = tzero, tzero
