@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cbook as cbook
 import datetime as dt
 import jcw_pywavelets as jpw
-import pdb
+import pdb, os
 import tqdm
 from sklearn.cluster import DBSCAN, AffinityPropagation, AgglomerativeClustering
 from sklearn import metrics
@@ -81,7 +81,7 @@ noise_sd = 1./100
 explode_factor = 10000
 
 ### Synthetic data
-mydatasize = torch.Size((1000, 100000))
+mydatasize = torch.Size((1000, 1000))
 centroidsize = torch.Size((desired_centroids, mydatasize[1]))
 centroids = F.normalize(torch.FloatTensor(centroidsize).normal_(),2,1)
 mydata = torch.cat([torch.FloatTensor(torch.Size((int(mydatasize[0]/centroidsize[0]),
@@ -259,7 +259,7 @@ class Enforcer(nn.Module):
         if self.similarity2 is None:
             return self.loss(self.similarity(x), self.similarity(y))
         else:
-            return self.loss(self.similarity(x), self.similarity(y))
+            return self.loss(self.similarity(x), self.similarity2(y))
     
 
 # class Info(nn.Module):
@@ -307,6 +307,10 @@ def batch_cosine(data, normalize=True):
     return temp.matmul(temp.t())
 
 
+def batch_2norm(x):
+    ''' Compute 2-norms of rows of x '''
+    return (x.unsqueeze(0) - x.unsqueeze(1)).pow(2).sum(2)
+
 def tsne_functional(sigma2, dist='normal'):
     '''
     Traditionally sigma2 is determined by preprocessing to find perplexity.
@@ -318,10 +322,12 @@ def tsne_functional(sigma2, dist='normal'):
         Note the t-sne formulation calculates p_{ij} up front, but this is not feasible when the number of datapoints is too large.
         We approximate it batchwise instead
         '''
+        # pdb.set_trace()
         if dist == 'normal':
-            numer = torch.exp(-data.matmul(data.t())/2/sigma2) - torch.eye(data.shape[0]).to(data.device.type)
+            numer = torch.exp(-batch_2norm(data)/2/sigma2) - torch.eye(data.shape[0]).to(data.device.type)
         elif dist == 't':
-            numer = torch.pow(1 + data.matmul(data.t()), -1) - torch.eye(data.shape[0]).to(data.device.type)
+            numer = torch.pow(1 + batch_2norm(data), -1) - torch.eye(data.shape[0]).to(data.device.type)
+        numer = (1-1e-16)*numer + 1e-16/(numer.shape[0]-1)
         denom = numer.sum(1, keepdim=True)
         numer = numer + torch.eye(data.shape[0]).to(data.device.type)  # avoid negative infinities; diagonal is ignored in tsne_kl so long as not inf or nan
         return torch.log(0.5 * (numer/denom + numer/denom.t()))
@@ -363,8 +369,7 @@ Clu = Clusterer(input_size=c_input_size, hidden_size=c_hidden_size,output_size=c
 # Enf = Enforcer(nn.MSELoss(), batch_cosine)  # cosine sim
 using_tsne = True
 tsne_sigma2 = 1
-.0
-Enf = Enforcer(tsne_kl, tsne_functional(tsne_sigma2, 'normal'), tsne_functional(np.nan, 't'))  # t-SNE objective
+Enf = Enforcer(tsne_kl, tsne_functional(np.nan, 't'), tsne_functional(tsne_sigma2, 'normal'))  # t-SNE objective
 
 using_tsne_str = '' if using_tsne is False else '_tsne' + str(tsne_sigma2)
 
@@ -512,7 +517,10 @@ for i0, i1 in arangeIntervals(data_size, 100):
     # for i0, i1 in arangeIntervals(data_size, minibatch_size):
 print(np.bincount(assignments.astype(int)))
 
-prefix = 'simulation_output' + str(dt.datetime.now()) + \
+logdir = 'simulation_output'
+if not os.path.exists(logdir):
+    os.makedirs(logdir)
+prefix = logdir + '/' + \
          '_centroids' + str(desired_centroids) + \
          '_samples' + str(mydatasize[0]) + \
          '_dims' + str(mydatasize[1]) + \
@@ -520,7 +528,7 @@ prefix = 'simulation_output' + str(dt.datetime.now()) + \
          '_explode' + str(explode_factor) + \
          using_tsne_str + \
          outputter_enforce_pd_str + \
-         '_'
+         '_' + str(dt.datetime.now())
 
 # npidf = pd.DataFrame({'npi':mydatadf['npi'],
 #                       'cluster':assignments})
