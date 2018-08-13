@@ -29,9 +29,9 @@ def loadModel(path):
         return named_objects
 
 
-class MimicDataset(Dataset):
+class MimicDatasetForFiltering(Dataset):
     def __init__(self, directory, step=100):
-        self._files = os.listdir(directory)
+        self._files = [s for s in os.listdir(directory) if s.startswith('note')]
         self._length = len(self._files)
         self._directory = directory
 
@@ -42,38 +42,25 @@ class MimicDataset(Dataset):
         '''returns a batch, dataset is not responsible for getting the index of note'''
         return loadModel(self._directory+self._files[i])
 
-md = MimicDataset('/mim/counts/')
+md = MimicDatasetForFiltering('/media/jweiss2/c670a65a-dc35-4970-94f7-071e8b478104/mimic3/extracts/notes/')
 mdloader = md  # DataLoader(md, num_workers=NUM_WORKERS)
-rnotes = pd.read_csv('/mim/extracts/RadiologyRows.txt',header=None).values[:,0]
-ri, r = 0, rnotes[0]
-rlist = [None]*len(rnotes)
+# rrows = pd.read_csv('/media/jweiss2/c670a65a-dc35-4970-94f7-071e8b478104/mimic3/extracts/notes/row_raddescription.csv')
+mn = pd.read_csv('/media/jweiss2/c670a65a-dc35-4970-94f7-071e8b478104/mimic3/NOTEEVENTS.csv', quotechar='"')  # , nrows=100)
+mn['row'] = mn.index
+
+# rnotes = rrows.iloc[:,0].values
+ri = 0
+rlist = [None]*sum(mn.CATEGORY=='Radiology')
 skipped = []
 
 for bowi, bow in tqdm(enumerate(mdloader)):
-    if len(bow) != step:
-        print('Warning: ', bowi, 'step has only', len(bow), 'elements.' )
-    lbub = [bowi*step, bowi*step+step]
-    if r > lbub[1]:
-        continue
-    while r < lbub[1] and ri < len(rnotes):
-        if r%step >= len(bow):
-            print('Skipping the notes:')
-            while r < lbub[1] and ri < len(rnotes):
-                print(r)
-                skipped = skipped + [r]
-                ri += 1
-                if ri == len(rnotes):
-                    continue
-                r = rnotes[ri]
+    for singlebow in bow:
+        row = list(singlebow.keys())[0]
+        if mn.CATEGORY[row] != 'Radiology':
             continue
-        rlist[ri] = bow[r%step]
+        rlist[ri] = singlebow
         ri += 1
-        if ri == len(rnotes):
-            continue
-        r = rnotes[ri]
 
-# saveModel(rlist, '/mim/extracts', 'RadiologyBagOfWords')
-skipped = np.array(skipped)
 
 def getLbubs(yourlist, step):
     lbubs = np.arange(0, len(yourlist), step=step)
@@ -81,11 +68,9 @@ def getLbubs(yourlist, step):
                                   np.concatenate((lbubs[1:],np.array([len(yourlist)]))).tolist()]))
     return lbub
 def saver(lbub):
-    temp = [d for d in rlist[lbub[0]:lbub[1]]]
-    saveModel(temp,'/mim/extracts','RadiologyDict' + str(lbub[0]))
+    temp = [rlist[d] for d in range(lbub[0],lbub[1])]
+    saveModel(temp,'/media/jweiss2/c670a65a-dc35-4970-94f7-071e8b478104/mimic3/extracts/notes/','RadiologyDict' + str(lbub[0]))
 
 lbub = getLbubs(rlist, step)
 with mp.Pool() as pool:
     pool.map(saver, lbub)
-
-saveModel(skipped,'/mim/extracts','RadiologySkippedMessesWithIndexing')

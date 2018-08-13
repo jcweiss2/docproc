@@ -1,9 +1,9 @@
-import nltk
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem.porter import PorterStemmer
 from collections import Counter
 import torch
+import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import multiprocessing as mp
@@ -11,7 +11,7 @@ import os
 import gzip, pickle
 
 # mn = pd.read_csv('../mimic/extracts/miniNOTES.csv', quotechar='"')
-mn = pd.read_csv('NOTES.csv', quotechar='"')  # , nrows=100)
+mn = pd.read_csv('/media/jweiss2/c670a65a-dc35-4970-94f7-071e8b478104/mimic3/NOTEEVENTS.csv', quotechar='"')  # , nrows=100)
 
 print('Tokenizing')
 with mp.Pool() as pool:
@@ -69,7 +69,7 @@ def saveModel(named_objects, directory, filename):
         f.close()
     return
 # saveModel(docs, '/mim', 'docspickled.gz')
-saveModel(tokens, '/mim', 'tokenspickled.gz')
+saveModel(tokens, '/media/jweiss2/c670a65a-dc35-4970-94f7-071e8b478104/mimic3/extracts/notes/', 'tokenspickled.gz')
 
 def loadModel(path):
     # jcwList = pickle.load(os.open(path,'rb'))
@@ -81,11 +81,11 @@ def loadModel(path):
 ### Note a dataframe for 2 million counts for 200k tokens is perhaps too large. So we save as pickle dicts (sparse)
 print('Saving')
 # df = pd.DataFrame(0, columns=list(tokens), index=range(len(docs)))
-piece = 100
-df = pd.DataFrame(0, columns=list(tokens), index=range(piece))
-# dfi = pd.DataFrame(columns=list(tokens))
-if os.path.isfile('notecounts.csv'):
-    os.remove('notecounts.csv')
+piece = 1000
+# df = pd.DataFrame(0, columns=list(tokens), index=range(piece))
+# # dfi = pd.DataFrame(columns=list(tokens))
+# if os.path.isfile('notecounts.csv'):
+#     os.remove('notecounts.csv')
 
 
 lbubs = np.arange(0, len(docs), step=piece)
@@ -102,12 +102,12 @@ def saver(lbub):
         # df.loc[i%piece] = row
     ### Save bag of words matrix
     # df.to_csv('notecounts'+lbub[0]+'.csv.gz', index=False, header=True, mode='w')
-    temp = [dict(Counter(d)) for d in docs[lbub[0]:lbub[1]]]
-    saveModel(temp,'/mim/counts','notecountsdict' + str(lbub[0]))
+    temp = [{di+lbub[0]:dict(Counter(d))} for di, d in enumerate(docs[lbub[0]:lbub[1]])]
+    saveModel(temp,'/media/jweiss2/c670a65a-dc35-4970-94f7-071e8b478104/mimic3/extracts/notes/','notecountsdict' + str(lbub[0]))
 with mp.Pool() as pool:
     pool.map(saver, lbub)
 
 
-# Next, e.g.
-hellotokens = loadModel('/mim/tokenspickled.gz.gz')
-hello = loadModel('/mim/counts/notecountsdict0.gz')
+# # Next, e.g.
+# hellotokens = loadModel('/mim/tokenspickled.gz.gz')
+# hello = loadModel('/mim/counts/notecountsdict0.gz')

@@ -1,6 +1,6 @@
 # Generative Adversarial Networks (GAN) example in PyTorch.
 import torch.multiprocessing as mp
-mp.set_start_method('spawn')
+mp.set_start_method('spawn', force=True)
 import numpy as np
 import itertools
 import torch
@@ -15,11 +15,13 @@ import datetime as dt
 import jcw_pywavelets as jpw
 import pdb
 import tqdm
+from torch.utils.data import Dataset, DataLoader
 from sklearn.cluster import DBSCAN, AffinityPropagation, AgglomerativeClustering
 from sklearn import metrics
 import pandas as pd
 import datetime as dt
 from jcw_utils import logandwide
+from mimic.jcw_mimicloader import mimicDS
 
 # Data params
 # data_mean = 4
@@ -48,7 +50,7 @@ o_learning_rate = 1e-4  # 2e-4
 g_learning_rate = 1e-5
 c_learning_rate = 1e-3
 # optim_betas = (0.9, 0.999)
-num_epochs = 500
+num_epochs = 10
 burn_in = 0
 print_interval = 1
 mbi_print_interval = 10000
@@ -75,7 +77,7 @@ device = 'cuda' if gpu_mode else 'cpu'
 #     mydata[xlb:xub,ylb:yub] = torch.Tensor(np.random.poisson(np.random.randint(10), size=(xub-xlb, yub-ylb)))
 # mydata = mydata.clone()
 
-desired_centroids = 10
+desired_centroids = 30
 noise_sd = 1./100
 explode_factor = 10000
 
@@ -100,11 +102,20 @@ law = logandwide()
 # mydata = F.normalize(Variable(mydata),2,0)
 # mydata = Variable(mydata)
 # mydata = Variable((1-2*(mydata > 0).float())*torch.log(1+torch.abs(mydata)))
-from torchvision.datasets import MNIST
-from torch.utils.data import Dataset, DataLoader
-from torchvision.transforms import ToTensor, Compose
-mdata = MNIST('mnist/', train=True, download=True, transform=Compose([ToTensor(), law]))
-mloader = DataLoader(mdata, batch_size=32, shuffle=True, num_workers=30)
+# from torchvision.datasets import MNIST
+# from torch.utils.data import Dataset, DataLoader
+# from torchvision.transforms import ToTensor, Compose
+# mdata = MNIST('mnist/', train=True, download=True, transform=Compose([ToTensor(), law]))
+# mloader = DataLoader(mdata, batch_size=32, shuffle=True, num_workers=30)
+# data_size = len(mdata)
+
+
+### MIMIC
+num_workers = 20
+mdata = mimicDS()
+mloader = DataLoader(mdata, batch_size=1, shuffle=True, num_workers=num_workers)
+data_size = len(mdata)
+
 
 # mydatadf = pd.DataFrame(mydata.data.numpy())
 # mydatadf['npi'] = true_assignments
@@ -116,14 +127,14 @@ mloader = DataLoader(mdata, batch_size=32, shuffle=True, num_workers=30)
 # mypd = mypd.drop(columns='npi')
 # mydata = Variable(torch.log(torch.FloatTensor(mypd.as_matrix())+1))
 
-data_size = len(mdata)
+
 g_input_size = 1024  # noise input size
 hidden_size = 128  # latent space size
 g_output_size = hidden_size
 side_channel_size = 1
 c_input_size = hidden_size - side_channel_size
 c_hidden_size = 128
-c_output_size = int(desired_centroids*2)  # # clusters
+c_output_size = int(desired_centroids)  # # clusters
 o_input_size = hidden_size
 o_hidden_size = hidden_size
 o_output_size = mdata[0][0].size()[1]
@@ -353,8 +364,8 @@ alpha = 1e-6
 #     mynoise = mynoise.cuda()
 #     mydata = mydata.cuda()
 
-# pr_g_update = 1
-pr_g_update = 0  # For autoencoder withour norm or cluster constraints
+pr_g_update = 1
+# pr_g_update = 0  # For autoencoder withour norm or cluster constraints
 g_lambda = 1e-4
 g_o_ratio = 1e-1
 pr_c_update = 1
@@ -385,6 +396,8 @@ for epoch in range(num_epochs):
     print('Epoch ' + str(epoch))
     # g_epoch_indices = torch.LongTensor(np.random.choice(data_size, size=data_size, replace=False))
     for i0, load_batch_mydata in enumerate(mloader):
+        if i0 % 100 == 0:
+            print('Batch', i0, '/', len(mdata))
         # print('Loaded batch ' + str(i0))
         load_batch_mydata = load_batch_mydata[0]  # throw out the label
         if gpu_mode:
@@ -474,9 +487,10 @@ for epoch in range(num_epochs):
               (epoch, el[0], el[1], el[2], el[3], el[4]))
             
         
-dataloader_fixed = DataLoader(mdata, batch_size=64, shuffle=False, num_workers=30)
+dataloader_fixed = DataLoader(mdata, batch_size=1, shuffle=False, num_workers=num_workers)
 Gen = Gen.eval()
-assignments = np.zeros(data_size).astype(int)
+assignments = np.zeros(data_size*1000).astype(int)
+labels = [''] * (data_size*1000)
 i0 = 0
 for i, mybatch in enumerate(dataloader_fixed):
     mynoise = mybatch[0].cuda().view(-1, mybatch[0].size()[2])
@@ -484,10 +498,15 @@ for i, mybatch in enumerate(dataloader_fixed):
     assignments[i0:i1] = np.argmax(
         Clu(Gen(mynoise)[:,side_channel_size:]).
         cpu().data.numpy(), axis=1)
+    labels[i0:i1] = mybatch[1]
     i0 = i1
     # for i0, i1 in arangeIntervals(data_size, minibatch_size):
+labels = [l[0] if isinstance(l, tuple) else l for l in labels]
+assignments = assignments[[label != '' for label in labels]]
+labels = [label for label in labels if label != '']
 print(np.bincount(assignments.astype(int)))
 
+pd.DataFrame({'label': labels, 'assignment':assignments}).to_csv('/media/jweiss2/c670a65a-dc35-4970-94f7-071e8b478104/mimic3/extracts/notes/clusters181318.csv', index=False)
 
 truths = np.zeros(data_size)
 i0 = 0
