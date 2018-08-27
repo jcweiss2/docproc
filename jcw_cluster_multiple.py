@@ -97,6 +97,11 @@ mydata = F.normalize(Variable(mydata),2,0)
 mydatadf = pd.DataFrame(mydata.data.numpy())
 mydatadf['npi'] = true_assignments
 
+# using_side_labels = False
+# side information about
+using_side_labels = True
+side_labels = torch.tensor(np.floor(true_assignments/2)*2)
+lambda_side_labels = 1e-3
 # mydata = mydata.t() # comment out if you want to cluster over physicians instead.
 
 # clustercsv = 'medicare/small_wide.csv'
@@ -117,6 +122,8 @@ o_input_size = hidden_size
 o_hidden_size = hidden_size
 o_output_size = mydata.size()[1]
 
+if using_side_labels:
+    c_output_size = np.append(c_output_size, [len(np.unique(side_labels))])
 
 # ### Comparisons ###
 
@@ -319,6 +326,16 @@ def batch_cosine(data, normalize=True):
         temp = data
     return temp.matmul(temp.t())
 
+def log_clamped(x, clamp=-32):
+    x[x == 0] = np.exp(clamp)
+    x = torch.log(x)
+    return x
+
+def batch_dot(x):
+    return (x.unsqueeze(0) * x.unsqueeze(1)).sum(2)
+
+def batch_equals(x):
+    return (x.unsqueeze(0) == x.unsqueeze(1)).float()
 
 def batch_2norm(x):
     ''' Compute 2-norms of rows of x '''
@@ -458,6 +475,8 @@ for epoch in range(num_epochs):
         # noise_data = mynoise[np.random.choice(data_size, size=minibatch_size),:]
         batch_noise = mynoise[g_minibatch_epoch_indices]
         batch_mydata = mydata[g_minibatch_epoch_indices]
+        if using_side_labels:
+            batch_side_labels = side_labels[g_minibatch_epoch_indices]
         if gpu_mode:
             batch_noise = batch_noise.cuda()
             batch_mydata = batch_mydata.cuda()
@@ -500,11 +519,21 @@ for epoch in range(num_epochs):
                 pass
             else:
                 clis = 0
-                for cl_size in c_output_size:
-                    c_loss += c_lambda / len(c_output_size) * (
-                        batch_cosine(torch.sqrt(clusters[:,clis:(clis+cl_size)]+1e-10),
-                                     normalize=False) -
-                        F.relu(batch_cosine(chidden))).pow(2).sum(1).mean()
+                for clsi, cl_size in enumerate(c_output_size):
+                    if using_side_labels and clsi + 1 == len(c_output_size):
+                        # compute probability vector similarity as dot products. then use cross-entropy
+                        # based on label agreement for the batch.
+                        sl_loss = lambda_side_labels / len(c_output_size) * -1 * (
+                            batch_equals(batch_side_labels) * log_clamped(batch_dot(clusters[:,clis:(clis+cl_size)])) +
+                            (1 - batch_equals(batch_side_labels)) * log_clamped(1 - batch_dot(clusters[:,clis:(clis+cl_size)]))).mean()
+                        if torch.isnan(sl_loss):
+                            pdb.set_trace()
+                        c_loss += sl_loss
+                    else:
+                        c_loss += c_lambda / len(c_output_size) * (
+                            batch_cosine(torch.sqrt(clusters[:,clis:(clis+cl_size)]+1e-10),
+                                         normalize=False) -
+                            F.relu(batch_cosine(chidden))).pow(2).sum(1).mean()
                     clis += cl_size
                 # c_loss += c_lambda * (
                 #     batch_cosine(torch.sqrt(clusters+1e-10),
