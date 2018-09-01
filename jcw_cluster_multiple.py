@@ -608,7 +608,8 @@ class AssignmentsColoring(nn.Module):
         
     def forward(self, x):
         x = [F.tanh(e(x[:,i])) for i,e in enumerate(self.embed_maps)]  # embed numbers per column
-        x = F.leaky_relu(self.map2(torch.stack(x).t()))  # now flexibility over the rows for same color representations
+        #x = F.leaky_relu(self.map2(torch.stack(x).t()))  # now flexibility over the rows for same color representations
+        x = F.leaky_relu(self.map2(torch.stack(x).transpose(0, 1)))  # now flexibility over the rows for same color representations
         x = F.tanh(self.map3(x))  # now flexibility over the rows for same color representations
         x = 127*F.tanh(self.map4(x))+128  # to output colors
         return x  # of size Cls x Individuals*3
@@ -704,7 +705,8 @@ npidf.to_csv(prefix + 'clusters_ours.csv')
 print('Post-process to get k clusters: ', len(np.unique(assignments)), ' -> ', desired_centroids)
 mydata = mydata.to(device)
 ncs = c_output_size
-merged_assignments = assignments.copy()
+#merged_assignments = assignments.copy()
+merged_assignments = torch.tensor(assignments)
 sim_dim = 100
 while ncs > desired_centroids and len(np.unique(merged_assignments)) > desired_centroids:
     unique_mas = np.unique(merged_assignments)
