@@ -379,7 +379,9 @@ def run(mydata, true_assignments, model_parameters):
                 batch_noise = batch_noise.cuda()
                 batch_mydata = batch_mydata.cuda()
                 g_minibatch_epoch_indices = g_minibatch_epoch_indices.cuda()
-                
+            if using_side_labels and gpu_mode:
+                batch_side_labels = batch_side_labels.cuda()
+
             hidden = Gen(batch_noise)
 
             if np.random.uniform() < pr_g_update:
@@ -494,30 +496,34 @@ def run(mydata, true_assignments, model_parameters):
 
 
 class ModelParameters:
-    num_epochs = 1000 #2000
-    minibatch_size = 128
-    burn_in = 10
-    print_interval = 1
-
-    o_learning_rate = 1e-4  # 2e-4
-    g_learning_rate = 1e-5
-    c_learning_rate = 1e-3
-    using_tsne = False
-
-    _hidden_size = 128  # latent space size
-    g_output_size = _hidden_size
-    side_channel_size = 1
-    c_input_size = _hidden_size - side_channel_size
-    c_hidden_size = 128
-    #c_output_size = 50 # number of clusters
-    c_output_size = np.arange(2, 20)
-    o_input_size = _hidden_size
-    o_hidden_size = _hidden_size
-
     def __init__(self, **kwargs):
+        self.num_epochs = 1000 #2000
+        self.minibatch_size = 128
+        self.burn_in = 10
+        self.print_interval = 1
+
+        self.o_learning_rate = 1e-4  # 2e-4
+        self.g_learning_rate = 1e-5
+        self.c_learning_rate = 1e-3
+        self.using_tsne = False
+
+        self._hidden_size = 128  # latent space size
+        self.g_output_size = self._hidden_size
+        self.side_channel_size = 1
+        self.c_input_size = self._hidden_size - self.side_channel_size
+        self.c_hidden_size = 128
+        #c_output_size = 50 # number of clusters
+        self.c_output_size = np.arange(2, 20)
+        self.o_input_size = self._hidden_size
+        self.o_hidden_size = self._hidden_size
+
         for k, v in kwargs.items():
             assert k in self.__dict__.keys()
             self.__dict__[k] = v
+
+    def __repr__(self):
+        dict_repr = self.__dict__.__repr__()
+        return "ModelParameters(**" + dict_repr + ")"
 
 
 if __name__ == "__main__":
