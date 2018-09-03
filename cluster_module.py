@@ -195,18 +195,20 @@ def log_clamped(x, clamp=-32):
 def batch_dot(x):
     return (x.unsqueeze(0) * x.unsqueeze(1)).sum(2)
 
-def batch_equals(x, discountNans=True):
-    if len(x.shape) == 2:  # return batch_equals counts for each column of x, ignores pairs with NAs
+def batch_equals(x, negation=False):
+    ''' If negation is True: returns counts of not equals, which is not total_N_count - N_equals because of possible missingness '''
+    if not negation:
         result = (x.unsqueeze(0) == x.unsqueeze(1)).float()
-        denom = (1-torch.isnan(result)).sum(2).float()
-        numer = result
-        numer[torch.isnan(numer)] = 0
-        numer = numer.sum(2)
-        result = numer/denom
-        result[numer==0] = 0
-        return result
     else:
-        return (x.unsqueeze(0) == x.unsqueeze(1)).float()
+        result = (x.unsqueeze(0) != x.unsqueeze(1)).float()
+    # denom = (1-torch.isnan(result)).sum(2).float()
+    numer = result
+    numer[torch.isnan(numer)] = 0
+    if len(numer.shape) == 3:
+        numer = numer.sum(2)
+    result = numer  # result = numer/denom
+    result[numer==0] = 0
+    return result
 
 def batch_2norm(x):
     ''' Compute 2-norms of rows of x '''
@@ -445,7 +447,7 @@ def run(mydata, true_assignments, model_parameters):
                             # based on label agreement for the batch.
                             sl_loss = mp.lambda_side_labels / len(c_output_size) * -1 * (
                                 batch_equals(batch_side_labels) * log_clamped(batch_dot(clusters[:,clis:(clis+cl_size)])) +
-                                (1 - batch_equals(batch_side_labels)) * log_clamped(1 - batch_dot(clusters[:,clis:(clis+cl_size)]))).mean()
+                                (batch_equals(batch_side_labels, negation=True)) * log_clamped(1 - batch_dot(clusters[:,clis:(clis+cl_size)]))).mean()
                             if torch.isnan(sl_loss):
                                 pdb.set_trace()
                             c_loss += sl_loss
@@ -543,13 +545,12 @@ class ModelParameters:
 
 
 if __name__ == "__main__":
-    # if True:
-    
+    # if True:    
     ### Synthetic data
     desired_centroids = 25
     noise_sd = 0.01
     explode_factor = 10000
-    mydatasize = torch.Size((100, 1000))
+    mydatasize = torch.Size((100, 100))
     centroidsize = torch.Size((desired_centroids, mydatasize[1]))
     centroids = F.normalize(torch.FloatTensor(centroidsize).normal_(),2,1)
     mydata = torch.cat([torch.FloatTensor(torch.Size((int(mydatasize[0]/centroidsize[0]),
