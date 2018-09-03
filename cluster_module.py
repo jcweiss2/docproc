@@ -281,6 +281,11 @@ def run(mydata, true_assignments, model_parameters):
     if using_side_labels:
         side_labels = torch.tensor(np.floor(true_assignments/2)*2)
 
+    # Add extra clustering if side labels are given.
+    c_output_size = mp.c_output_size
+    if using_side_labels:
+        c_output_size = np.append(mp.c_output_size, [len(np.unique(true_assignments))])
+
     # Determine if we should use the GPU or CPU.
     # gpu_mode = True
     gpu_mode = torch.cuda.is_available()
@@ -299,7 +304,7 @@ def run(mydata, true_assignments, model_parameters):
     gi_sampler = get_generator_input_sampler()
     Gen = Generator(input_size=g_input_size, hidden_size=mp.g_output_size, output_size=mp.g_output_size, hd=hd)
     Out = Outputter(input_size=mp.o_input_size, hidden_size=mp.o_hidden_size, output_size=o_output_size, injectivity_by_positivity=outputter_enforce_pd)
-    Clu = Clusterer(input_size=mp.c_input_size, hidden_size=mp.c_hidden_size,output_size=mp.c_output_size)
+    Clu = Clusterer(input_size=mp.c_input_size, hidden_size=mp.c_hidden_size,output_size=c_output_size)
 
     if mp.using_tsne:
         tsne_sigma2 = 1
@@ -423,18 +428,18 @@ def run(mydata, true_assignments, model_parameters):
                     #     F.relu(batch_cosine(chidden))).pow(2).sum(1).mean()
                     # From Jeremy's new jcw_cluster_multiple.py:
                     clis = 0
-                    for clsi, cl_size in enumerate(mp.c_output_size):
-                        if using_side_labels and clsi + 1 == len(mp.c_output_size):
+                    for clsi, cl_size in enumerate(c_output_size):
+                        if using_side_labels and clsi + 1 == len(c_output_size):
                             # compute probability vector similarity as dot products. then use cross-entropy
                             # based on label agreement for the batch.
-                            sl_loss = mp.lambda_side_labels / len(mp.c_output_size) * -1 * (
+                            sl_loss = mp.lambda_side_labels / len(c_output_size) * -1 * (
                                 batch_equals(batch_side_labels) * log_clamped(batch_dot(clusters[:,clis:(clis+cl_size)])) +
                                 (1 - batch_equals(batch_side_labels)) * log_clamped(1 - batch_dot(clusters[:,clis:(clis+cl_size)]))).mean()
                             if torch.isnan(sl_loss):
                                 pdb.set_trace()
                             c_loss += sl_loss
                         else:
-                            c_loss += c_lambda / len(mp.c_output_size) * (
+                            c_loss += c_lambda / len(c_output_size) * (
                                 batch_cosine(torch.sqrt(clusters[:,clis:(clis+cl_size)]+1e-10),
                                              normalize=False) -
                                 F.relu(batch_cosine(chidden))).pow(2).sum(1).mean()
@@ -475,18 +480,18 @@ def run(mydata, true_assignments, model_parameters):
     # print(np.bincount(assignments.astype(int)))
     # From Jeremy's new jcw_cluster_multiple.py
     Gen = Gen.eval()
-    assignments = np.zeros((mynoise.shape[0], len(mp.c_output_size)))
+    assignments = np.zeros((mynoise.shape[0], len(c_output_size)))
     for i0, i1 in arangeIntervals(data_size, 100):
         membership_pr = Clu( Gen( mynoise[i0:i1].to(device) )[:,mp.side_channel_size:] ).\
             cpu().data.numpy()
         cli = 0
-        for cl_vi, cl_size in enumerate(mp.c_output_size):
+        for cl_vi, cl_size in enumerate(c_output_size):
             assignments[i0:i1, cl_vi] = np.argmax(membership_pr[:,cli:cli+cl_size], axis=1)
             cli += cl_size
         # for i0, i1 in arangeIntervals(data_size, minibatch_size):
     _ = [print(len(np.unique(assignments[:,assni])),
                '/',
-               mp.c_output_size[assni],
+               c_output_size[assni],
                ':',
                np.bincount(assignments[:,assni].astype(int))) for assni in np.arange(assignments.shape[1])]
 
