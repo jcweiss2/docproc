@@ -280,7 +280,6 @@ def run(mydata, true_assignments, model_parameters):
     using_side_labels = (true_assignments is not None)
     if using_side_labels:
         side_labels = torch.tensor(np.floor(true_assignments/2)*2)
-        lambda_side_labels = 1e-3
 
     # Determine if we should use the GPU or CPU.
     # gpu_mode = True
@@ -428,7 +427,7 @@ def run(mydata, true_assignments, model_parameters):
                         if using_side_labels and clsi + 1 == len(mp.c_output_size):
                             # compute probability vector similarity as dot products. then use cross-entropy
                             # based on label agreement for the batch.
-                            sl_loss = lambda_side_labels / len(mp.c_output_size) * -1 * (
+                            sl_loss = mp.lambda_side_labels / len(mp.c_output_size) * -1 * (
                                 batch_equals(batch_side_labels) * log_clamped(batch_dot(clusters[:,clis:(clis+cl_size)])) +
                                 (1 - batch_equals(batch_side_labels)) * log_clamped(1 - batch_dot(clusters[:,clis:(clis+cl_size)]))).mean()
                             if torch.isnan(sl_loss):
@@ -506,6 +505,7 @@ class ModelParameters:
         self.g_learning_rate = 1e-5
         self.c_learning_rate = 1e-3
         self.using_tsne = False
+        self.lambda_side_labels = 1e-3
 
         self._hidden_size = 128  # latent space size
         self.g_output_size = self._hidden_size
