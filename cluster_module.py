@@ -279,7 +279,7 @@ def run(mydata, true_assignments, model_parameters):
     # Determine if side labels are given and parameters.
     using_side_labels = (true_assignments is not None)
     if using_side_labels:
-        side_labels = torch.tensor(np.floor(true_assignments/2)*2)
+        side_labels = torch.tensor(true_assignments)
 
     # Add extra clustering if side labels are given.
     c_output_size = mp.c_output_size
