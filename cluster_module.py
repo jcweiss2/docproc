@@ -195,8 +195,18 @@ def log_clamped(x, clamp=-32):
 def batch_dot(x):
     return (x.unsqueeze(0) * x.unsqueeze(1)).sum(2)
 
-def batch_equals(x):
-    return (x.unsqueeze(0) == x.unsqueeze(1)).float()
+def batch_equals(x, discountNans=True):
+    if len(x.shape) == 2:  # return batch_equals counts for each column of x, ignores pairs with NAs
+        result = (x.unsqueeze(0) == x.unsqueeze(1)).float()
+        denom = (1-torch.isnan(result)).sum(2).float()
+        numer = result
+        numer[torch.isnan(numer)] = 0
+        numer = numer.sum(2)
+        result = numer/denom
+        result[numer==0] = 0
+        return result
+    else:
+        return (x.unsqueeze(0) == x.unsqueeze(1)).float()
 
 def batch_2norm(x):
     ''' Compute 2-norms of rows of x '''
@@ -284,7 +294,8 @@ def run(mydata, true_assignments, model_parameters):
     # Add extra clustering if side labels are given.
     c_output_size = mp.c_output_size
     if using_side_labels:
-        c_output_size = np.append(mp.c_output_size, [len(np.unique(true_assignments))])
+        num_side_assignments = min(len(np.unique(true_assignments)[~np.isnan(np.unique(true_assignments))]), 1000)  # slight hack
+        c_output_size = np.append(mp.c_output_size, [num_side_assignments])
 
     # Determine if we should use the GPU or CPU.
     # gpu_mode = True
@@ -301,7 +312,7 @@ def run(mydata, true_assignments, model_parameters):
     outputter_enforce_pd_str = '' if not outputter_enforce_pd else '_pdon'
 
     # d_sampler = get_distribution_sampler(data_mean, data_stddev)
-    gi_sampler = get_generator_input_sampler()
+    # gi_sampler = get_generator_input_sampler()
     Gen = Generator(input_size=g_input_size, hidden_size=mp.g_output_size, output_size=mp.g_output_size, hd=hd)
     Out = Outputter(input_size=mp.o_input_size, hidden_size=mp.o_hidden_size, output_size=o_output_size, injectivity_by_positivity=outputter_enforce_pd)
     Clu = Clusterer(input_size=mp.c_input_size, hidden_size=mp.c_hidden_size,output_size=c_output_size)
@@ -518,7 +529,7 @@ class ModelParameters:
         self.c_input_size = self._hidden_size - self.side_channel_size
         self.c_hidden_size = 128
         #c_output_size = 50 # number of clusters
-        self.c_output_size = np.arange(2, 20)
+        self.c_output_size = np.arange(20, 30)
         self.o_input_size = self._hidden_size
         self.o_hidden_size = self._hidden_size
 
@@ -532,10 +543,11 @@ class ModelParameters:
 
 
 if __name__ == "__main__":
-
+    # if True:
+    
     ### Synthetic data
     desired_centroids = 25
-    noise_sd = 0.1
+    noise_sd = 0.01
     explode_factor = 10000
     mydatasize = torch.Size((100, 1000))
     centroidsize = torch.Size((desired_centroids, mydatasize[1]))
@@ -547,6 +559,16 @@ if __name__ == "__main__":
         random_(1,explode_factor).unsqueeze(1)
     mydata = mydata / torch.min(mydata.norm(2,1),torch.ones_like(mydata[:,0])).unsqueeze(1)
     true_assignments = np.repeat(np.arange(centroidsize[0]),int(mydatasize[0]/centroidsize[0]))
+
+    # test multiple side labels (by column)
+    true_assignments = np.tile(true_assignments,(2,1)).transpose().astype(float)
+    true_assignments[:,1] = (true_assignments[:,1]/2).round()
+    true_assignments[1,1] = np.nan
+    true_assignments[10,1] = np.nan
+    true_assignments[2,0] = np.nan
+    true_assignments[2,1] = np.nan
+    print(true_assignments.shape)
+    
     mydata = F.normalize(Variable(mydata),2,0)
     # mydata = Variable(mydata)
     # mydata = Variable((1-2*(mydata > 0).float())*torch.log(1+torch.abs(mydata)))
@@ -554,7 +576,7 @@ if __name__ == "__main__":
     #mydatadf['npi'] = true_assignments
 
     mp = ModelParameters()
-    mp.num_epochs = 100
+    mp.num_epochs = 1000
     mp.desired_centroids = desired_centroids
     #run(mydata, None, mp)
     run(mydata, true_assignments, mp)
