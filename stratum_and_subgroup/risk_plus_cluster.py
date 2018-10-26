@@ -49,11 +49,13 @@ def subsample(matrix, subsample_stride=1, flip_long=True):
 class Generator(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, hd):
         super(Generator, self).__init__()
+        # self.dropout = nn.Dropout()
+        # self.dropout2 = nn.Dropout()
         self.map1 = nn.Linear(input_size, hidden_size)
-        self.hd = hd[int(np.log2(hidden_size))-1].t()  # value (input) to freq (output) space, to pool
-        self.permute_number = 4
-        self.permuteTensor = torch.cat(tuple([SignMatrix(hidden_size).matmul(MakePermuteMatrix(hidden_size)).unsqueeze(0) for p in range(self.permute_number)]),0)  # PN x H x H
-        self.batchnorm1 = nn.BatchNorm1d(hidden_size)
+        # self.hd = hd[int(np.log2(hidden_size))-1].t()  # value (input) to freq (output) space, to pool
+        # self.permute_number = 4
+        # self.permuteTensor = torch.cat(tuple([SignMatrix(hidden_size).matmul(MakePermuteMatrix(hidden_size)).unsqueeze(0) for p in range(self.permute_number)]),0)  # PN x H x H
+        # self.batchnorm1 = nn.BatchNorm1d(hidden_size)
         self.batchnorm2 = nn.BatchNorm1d(hidden_size)
         self.batchnorm3 = nn.BatchNorm1d(hidden_size)
         self.map2 = nn.Linear(hidden_size, hidden_size)
@@ -62,14 +64,16 @@ class Generator(nn.Module):
         self.pool = nn.MaxPool1d(3,stride=2)
 
     def forward(self, x):
-        x0 = 0
+        # x0 = 0
+        # x = F.leaky_relu(self.map1(self.dropout(x)))
+        # x = x.matmul(self.hd)  # x.matmul(self.hd)
+        # xs = x.matmul(self.permuteTensor)  # PN x B x H
+        # # pdb.set_trace()
+        # # x = torch.max(x,2)[0]
+        # x = xs.permute((1,2,0))  # B x H x PN
+        # x = self.batchnorm2(self.pool(x)).sum(2) + x0
         x = F.leaky_relu(self.map1(x))
-        x = x.matmul(self.hd)  # x.matmul(self.hd)
-        xs = x.matmul(self.permuteTensor)  # PN x B x H
-        # pdb.set_trace()
-        # x = torch.max(x,2)[0]
-        x = xs.permute((1,2,0))  # B x H x PN
-        x = self.batchnorm2(self.pool(x)).sum(2) + x0
+        x = self.batchnorm2(x)
         x = F.leaky_relu(self.map2(x))
         x = self.batchnorm3(self.map3(x))
         return F.leaky_relu(self.map4(F.leaky_relu(x)),1e-1)
@@ -338,8 +342,8 @@ def run(mydata, side_label_assignments, model_parameters, outcomes, true_assignm
     tzero = Variable(torch.zeros(1))
     if gpu_mode:
         Gen = Gen.cuda()
-        Gen.permuteTensor = Gen.permuteTensor.cuda()
-        Gen.hd = Gen.hd.cuda()
+        # Gen.permuteTensor = Gen.permuteTensor.cuda()
+        # Gen.hd = Gen.hd.cuda()
         Out = Out.cuda()
         Clu = Clu.cuda()
         tzero = tzero.cuda()
@@ -350,11 +354,11 @@ def run(mydata, side_label_assignments, model_parameters, outcomes, true_assignm
     CE = nn.CrossEntropyLoss()
     MSE = nn.MSELoss()
     # d_optimizer = optim.Adam(D.parameters(), lr=d_learning_rate, betas=optim_betas, weight_decay=1e-6)
-    g_optimizer = optim.Adam(Gen.parameters(), lr=mp.g_learning_rate)
+    # g_optimizer = optim.Adam(Gen.parameters(), lr=mp.g_learning_rate)
     # o_optimizer = optim.RMSprop(itertools.chain(Out.parameters(),Gen.parameters()),
     #                          lr=mp.o_learning_rate)  # , weight_decay=1e-3)
     o_optimizer = optim.Adam(itertools.chain(Out.parameters(),Gen.parameters()),
-                             lr=mp.o_learning_rate, weight_decay=1e-8)  # , weight_decay=1e-3)
+                             lr=mp.o_learning_rate, weight_decay=1e-3)  # , weight_decay=1e-3)
     c_optimizer = optim.Adam(itertools.chain(Gen.parameters(),Clu.parameters()), lr=mp.c_learning_rate, weight_decay=1e-10)
     # c_optimizer = optim.Adam(itertools.chain(Gen.parameters(),Clu.parameters(), Out.parameters()), lr=c_learning_rate, weight_decay=1e-10)
     # i_optimizer = optim.RMSprop(itertools.chain(G.parameters(), D.parameters()), lr=i_learning_rate)
@@ -367,7 +371,7 @@ def run(mydata, side_label_assignments, model_parameters, outcomes, true_assignm
 
     pr_g_update = 1
     g_lambda = 1e-4  # hidden is on hypersphere
-    g_o_ratio = 1e-1  
+    g_l1_lambda = 1e-4  # hidden is on hypersphere
     pr_c_update = 1
     c_only = False
     c_lambda = 1e-0  # clusters p match 
@@ -428,6 +432,10 @@ def run(mydata, side_label_assignments, model_parameters, outcomes, true_assignm
                 # e_loss = tzero
                 o_loss += e_loss
                 o_loss += g_loss
+                o_loss += (Gen.map1.weight.abs().sum() +
+                           Gen.map2.weight.abs().sum() +
+                           Gen.map3.weight.abs().sum() +
+                           Gen.map4.weight.abs().sum()) * g_l1_lambda
 
                 prediction = embedding_prediction(hidden)
                 r_loss = F.binary_cross_entropy(prediction, batch_outcomes)
@@ -444,7 +452,7 @@ def run(mydata, side_label_assignments, model_parameters, outcomes, true_assignm
                 # chidden = hidden[:,mp.side_channel_size:]
                 clusters = Clu(chidden)
                 if epoch < mp.burn_in:
-                    c_loss = torch.tensor(0.)
+                    c_loss = torch.tensor(0.).cuda() if gpu_mode else torch.tensor(0.)
                     pass
                 else:
                     # Old:
@@ -522,34 +530,52 @@ def run(mydata, side_label_assignments, model_parameters, outcomes, true_assignm
                ':',
                np.bincount(assignments[:,assni].astype(int))) for assni in np.arange(assignments.shape[1])]
 
+    def model(mynoise, Gen=Gen, Clu=Clu):
+        Gen = Gen.eval()
+        assignments = np.zeros((mynoise.shape[0], len(c_output_size)))
+        risks = np.zeros((mynoise.shape[0], 1))
+        data_size = mynoise.shape[0]
+        for i0, i1 in arangeIntervals(data_size, 100):
+            embeddedv = Gen(mynoise[i0:i1].to(device))
+            risks[i0:i1, 0] = embedding_prediction(embeddedv).cpu().data.numpy()
+            membership_pr = Clu(embeddedv.abs()[:,mp.side_channel_size:]).\
+                            cpu().data.numpy()
+            cli = 0
+            for cl_vi, cl_size in enumerate(c_output_size):
+                assignments[i0:i1, cl_vi] = np.argmax(membership_pr[:,cli:cli+cl_size], axis=1)
+                cli += cl_size
+        return {'assignments':assignments,
+                'risks': risks,
+                'embeddedv_asample': embeddedv}
+    
     return {"assignments": assignments,
             "mynoise": mynoise,
-            "risks": risks
-    }
-
+            "risks": risks,
+            "model": model}
 
 class ModelParameters:
     def __init__(self, **kwargs):
-        self.num_epochs = 1000 #2000
+        self.num_epochs = 1000  # 2000
         self.minibatch_size = 64
         self.burn_in = 10
-        self.print_interval = 10
+        self.print_interval = 1
 
-        self.o_learning_rate = 1e-4  # 2e-4
-        self.g_learning_rate = 1e-5
+        self.o_learning_rate = 1e-3  # 2e-4
+        # self.g_learning_rate = 1e-5
         self.c_learning_rate = 1e-3
         self.using_tsne = False
         self.lambda_side_labels = 1e-3
 
-        self._hidden_size = 128  # latent space size
+        self._latent_size = 128
+        self._hidden_size = 8  # latent space size
         self.g_output_size = self._hidden_size
         self.side_channel_size = 1
         self.c_input_size = self._hidden_size - self.side_channel_size
         self.c_hidden_size = 128
-        #c_output_size = 50 # number of clusters
-        self.c_output_size = [25]  # np.arange(5, 15)
+        # c_output_size = 50 # number of clusters
+        self.c_output_size = [8]  # np.arange(5, 15)
         self.o_input_size = self._hidden_size
-        self.o_hidden_size = self._hidden_size
+        self.o_hidden_size = self._latent_size
 
         for k, v in kwargs.items():
             assert k in self.__dict__.keys()
@@ -566,42 +592,141 @@ class ModelParameters:
 if __name__ == "__main__":
     # if True:    
     ### Synthetic data
-    desired_centroids = 25
-    noise_sd = 0.01
-    explode_factor = 10000
-    mydatasize = torch.Size((100, 100))
-    centroidsize = torch.Size((desired_centroids, mydatasize[1]))
-    centroids = F.normalize(torch.FloatTensor(centroidsize).normal_(),2,1)
-    mydata = torch.cat([torch.FloatTensor(torch.Size((int(mydatasize[0]/centroidsize[0]),
-                                                      mydatasize[1]))).normal_(std=noise_sd) +
-                        c for c in centroids])
-    mydata = mydata * torch.FloatTensor(torch.Size([mydatasize[0]])).\
-        random_(1,explode_factor).unsqueeze(1)
-    mydata = mydata / torch.min(mydata.norm(2,1),torch.ones_like(mydata[:,0])).unsqueeze(1)
-    true_assignments = np.repeat(np.arange(centroidsize[0]),int(mydatasize[0]/centroidsize[0]))
+    # desired_centroids = 10
+    # noise_sd = 0.01
+    # explode_factor = 10000
+    # mydatasize = torch.Size((100, 100))
+    # centroidsize = torch.Size((desired_centroids, mydatasize[1]))
+    # centroids = F.normalize(torch.FloatTensor(centroidsize).normal_(),2,1)
+    # mydata = torch.cat([torch.FloatTensor(torch.Size((int(mydatasize[0]/centroidsize[0]),
+    #                                                   mydatasize[1]))).normal_(std=noise_sd) +
+    #                     c for c in centroids])
+    # mydata = mydata * torch.FloatTensor(torch.Size([mydatasize[0]])).\
+    #     random_(1,explode_factor).unsqueeze(1)
+    # mydata = mydata / torch.min(mydata.norm(2,1),torch.ones_like(mydata[:,0])).unsqueeze(1)
+    # true_assignments = np.repeat(np.arange(centroidsize[0]),int(mydatasize[0]/centroidsize[0]))
 
-    risk = torch.sigmoid((mydata.norm(2,dim=1)-mydata.norm(2,dim=1).mean())/
-                         mydata.norm(2,dim=1).std()*
-                         torch.log(1+torch.tensor(true_assignments).float()))
-    risk_bits = torch.distributions.bernoulli.Bernoulli(risk).sample()
+    # risk = torch.sigmoid((mydata.norm(2,dim=1)-mydata.norm(2,dim=1).mean())/
+    #                      mydata.norm(2,dim=1).std()*
+    #                      torch.log(1+torch.tensor(true_assignments).float()))
+    # risk_bits = torch.distributions.bernoulli.Bernoulli(risk).sample()
 
-    mydata = F.normalize(Variable(mydata),2,0)
-    # mydata = Variable(mydata)
-    # mydata = Variable((1-2*(mydata > 0).float())*torch.log(1+torch.abs(mydata)))
-    #mydatadf = pd.DataFrame(mydata.data.numpy())
-    #mydatadf['npi'] = true_assignments
+    # mydata = F.normalize(Variable(mydata),2,0)
+    # # mydata = Variable(mydata)
+    # # mydata = Variable((1-2*(mydata > 0).float())*torch.log(1+torch.abs(mydata)))
+    # #mydatadf = pd.DataFrame(mydata.data.numpy())
+    # #mydatadf['npi'] = true_assignments
 
+    import pandas as pd
+    pd_mydata = pd.read_csv('~/workspace/marshfield/recode_like_data/training_wide.csv')
+    pd_myoutcomes = pd.read_csv('~/workspace/marshfield/recode_like_data/training_outcomes_wide.csv')
+    pd_mytestdata = pd.read_csv('~/workspace/marshfield/recode_like_data/holdout_wide.csv')
+    pd_mytestoutcomes = pd.read_csv('~/workspace/marshfield/recode_like_data/holdout_outcomes_wide.csv')
+
+    pd_mydata = pd_mydata.drop(columns='STUDY_ID')
+    mydata = torch.log1p(torch.tensor(pd_mydata.as_matrix()).float())
+    pd_myoutcomes = pd_myoutcomes.drop(columns='STUDY_ID')
+    myoutcomes = torch.tensor(torch.tensor(pd_myoutcomes.as_matrix()).float().sum(1) > 0).float()
+    pd_mytestdata = pd_mytestdata.drop(columns='STUDY_ID')
+    mytestdata = torch.log1p(torch.tensor(pd_mytestdata.as_matrix()).float())
+    pd_mytestoutcomes = pd_mytestoutcomes.drop(columns='STUDY_ID')
+    mytestoutcomes = torch.tensor(torch.tensor(pd_mytestoutcomes.as_matrix()).float().sum(1) > 0).float()
+
+    true_assignments = None
+    risk_bits = myoutcomes
+    
     # true_assignments = None
     side_label_assignments = None
 
     mp = ModelParameters()
-    mp.num_epochs = 2000
-    mp.desired_centroids = desired_centroids
-    #run(mydata, None, mp)
+    mp.num_epochs = 500
+    # run(mydata, None, mp)
     result = run(mydata, side_label_assignments, mp, risk_bits, true_assignments)
 
-    from sklearn.metrics import roc_auc_score
-    print('Training AUC:', roc_auc_score(risk_bits, result['risks'][:,0]))
+    result['model'](mytestdata)
+    result['model'](mydata)['risks']
 
-    from sklearn.metrics import adjusted_rand_score
-    print('ARI:', adjusted_rand_score(true_assignments, result['assignments'][:,0]))
+    # Our method (risk and cluster): AUC
+    from sklearn.metrics import roc_auc_score
+    print('Training AUC:', roc_auc_score(risk_bits, result['model'](mydata)['risks'][:,0]))
+    print('Test AUC:', roc_auc_score(mytestoutcomes, result['model'](mytestdata)['risks'][:,0]))
+
+    # Clusters found by method: AUC
+    def group_risk(assignments, outcomes):
+        subgroup_df = pd.DataFrame({'assignments': assignments,
+                                    'outcomes': outcomes})
+        sg_risk = subgroup_df.groupby(['assignments']).mean().to_dict()['outcomes']
+        return sg_risk
+    sg_risk = group_risk(result['assignments'][:,0], risk_bits)
+    print('Our clustering, risk by label; training AUC:',
+          roc_auc_score(risk_bits,
+                        np.array([sg_risk[s] for s in result['model'](mydata)['assignments'][:,0]])))
+    print('Our clustering, risk by label: test AUC:',
+          roc_auc_score(mytestoutcomes.cpu().numpy(),
+                        np.array([sg_risk[s] if s in sg_risk else 0
+                                  for s in
+                                  result['model'](mytestdata)['assignments'][:,0]])))
+
+
+    # Cluster found by k-means: AUC
+    from sklearn.cluster import KMeans
+    km = KMeans(mp.c_output_size[0]).fit(mydata.cpu().numpy())
+    km_sg_risk = group_risk(km.labels_, risk_bits)
+    print('K-means, risk by label; training AUC:',
+          roc_auc_score(risk_bits,
+                        np.array([km_sg_risk[s] for s in km.predict(mydata.cpu().numpy())])))
+    print('K-means, risk by label; training AUC:',
+          roc_auc_score(mytestoutcomes.cpu().numpy(),
+                        np.array([km_sg_risk[s] for s in km.predict(mytestdata.cpu().numpy())])))    
+    
+    # LASSO: AUC
+    from sklearn.linear_model import LassoCV
+    lasso = LassoCV().fit(pd_mydata, myoutcomes.cpu().numpy())
+    print('Lasso train: AUC',
+          roc_auc_score(myoutcomes, lasso.predict(mydata.cpu().numpy())))
+    print('Lasso test: AUC',
+          roc_auc_score(mytestoutcomes, lasso.predict(mytestdata.cpu().numpy())))
+
+
+    from sklearn.linear_model import LogisticRegressionCV
+    lrcv = LogisticRegressionCV([3e-4, 1e-3, 1e-2, 1e-1],
+                                penalty='l1', solver='liblinear', n_jobs=-1, cv=5)
+    lr_lasso = lrcv.fit(pd_mydata.as_matrix(),
+                        myoutcomes.cpu().numpy())
+    print('LR Lasso train: AUC',
+          roc_auc_score(myoutcomes, lr_lasso.predict(mydata.cpu().numpy())))
+    print('LR Lasso test: AUC',
+          roc_auc_score(mytestoutcomes, lr_lasso.predict(mytestdata.cpu().numpy())))
+    
+
+    # Now compare:
+    # highest predicted risk (above threshold) intersected with highest risk cluster
+    # k-means highest risk
+    # lassoCV highest risk
+    # in terms of (1) risk and (2) homogeneity
+    riskdf = pd.DataFrame.from_dict(sg_risk, orient='index')
+    riskdf = riskdf.reset_index()
+    riskdf.columns = ['assignment','risk']
+    riskdf['count'] = [s for s in np.bincount(result['assignments'][:,0].astype(int)) if s!=0]
+    riskdf['score'] = np.log1p(riskdf['count']) * riskdf.risk
+    highest_risk_group = riskdf.iloc[riskdf.idxmax()[-1],0]
+    in_hrg = result['model'](mytestdata)['assignments'][:,0] == highest_risk_group
+    print('High-risk intersection (ours, ours): AUC',
+          roc_auc_score(mytestoutcomes.cpu().numpy()[in_hrg],
+                        result['model'](mytestdata)['risks'][in_hrg]))
+    test_sg_risk = group_risk(result['model'](mytestdata)['assignments'][:,0], mytestoutcomes)
+    test_riskdf = pd.DataFrame.from_dict(test_sg_risk, orient='index')
+    test_riskdf = test_riskdf.reset_index()
+    test_riskdf.columns = ['assignment','risk']
+    test_riskdf['count'] = [s for s in
+                            np.bincount(result['model'](mytestdata)['assignments'][:,0].\
+                                        astype(int)) if s!=0]
+    test_riskdf['score'] = np.log1p(test_riskdf['count']) * test_riskdf.risk
+    print(riskdf)
+    print(test_riskdf)
+
+    
+    
+    # # If you have ground truth clustering
+    # from sklearn.metrics import adjusted_rand_score
+    # print('ARI:', adjusted_rand_score(true_assignments, result['assignments'][:,0]))
