@@ -719,6 +719,8 @@ if __name__ == "__main__":
                             np.bincount(result['model'](mytestdata)['assignments'][:,0].\
                                         astype(int)) if s!=0]
     test_riskdf['score'] = np.log1p(test_riskdf['count']) * test_riskdf.risk
+    riskdf['test_risk'] = test_riskdf['risk']
+    
     print('-----')
     print('Ours risk table\n', riskdf)
     print('Ours risk table (test)\n', test_riskdf)
@@ -729,8 +731,14 @@ if __name__ == "__main__":
     km_riskdf['count'] = [s for s in np.bincount(km.labels_.astype(int))
                           if s!=0]
     km_riskdf['score'] = np.log1p(km_riskdf['count']) * km_riskdf.risk
-    print('KMrisk table\n', km_riskdf)
     km_tops= km.predict(mytestdata.cpu().numpy()) == km_riskdf.idxmax()[-1]
+    km_test_sg_risk = group_risk(km.predict(mytestdata.cpu().numpy()), mytestoutcomes)
+    km_test_riskdf = pd.DataFrame.from_dict(km_test_sg_risk, orient='index')
+    km_test_riskdf = km_test_riskdf.reset_index()
+    km_test_riskdf.columns = ['assignment','risk']
+
+    km_riskdf['test_risk'] = km_test_riskdf['risk']
+    print('KMrisk table\n', km_riskdf)
 
     print('-----')
     print('High-risk intersection (ours, ours): AUC',
@@ -752,6 +760,16 @@ if __name__ == "__main__":
                       matrix[torch.randperm(matrix.shape[0])[:samples]].unsqueeze(1)).\
                       abs().sum(2).mean()
         return total.item()/iter
+    
+    def avg_pairwise_l2(matrix, samples=20, iter=1000):
+        matrix = torch.tensor(matrix)
+        total = 0
+        for i in range(iter):
+            total += (matrix[torch.randperm(matrix.shape[0])[:samples]].unsqueeze(0) -
+                      matrix[torch.randperm(matrix.shape[0])[:samples]].unsqueeze(1)).\
+                      pow(2).sum(2).pow(0.5).mean()
+        return total.item()/iter
+
         # return np.mean([
         #     np.abs(np.subtract.outer(
         #         matrix[np.random.choice(matrix.shape[0], samples),:].
@@ -760,10 +778,18 @@ if __name__ == "__main__":
         #         reshape(matrix.shape[0], -1, samples)
         #     )).sum(2).mean() for i in range(iter)])
     print('-----')
+    print('baseline closeness:', avg_pairwise_l1(mytestdata.cpu().numpy()))
     print('our high-risk closeness:', avg_pairwise_l1(mytestdata.cpu().numpy()[in_hrg,:]))
     print('lasso high-risk closeness:', avg_pairwise_l1(mytestdata.cpu().numpy()[ltr_top100,:]))
     print('kmeans high-risk closeness:', avg_pairwise_l1(mytestdata.cpu().numpy()[km_tops,:]))
 
+    print('baseline closeness (l2):', avg_pairwise_l2(mytestdata.cpu().numpy()))
+    print('our high-risk closeness (l2):', avg_pairwise_l2(mytestdata.cpu().numpy()[in_hrg,:]))
+    print('lasso high-risk closeness (l2):', avg_pairwise_l2(mytestdata.cpu().numpy()[ltr_top100,:]))
+    print('kmeans high-risk closeness (l2):', avg_pairwise_l2(mytestdata.cpu().numpy()[km_tops,:]))
+
+    # pd.DataFrame({'real_labels': mytestoutcomes.cpu().numpy()}).to_csv('../../marshfield/recode_like_data/results/181027assignments.csv', index=False)
+    pd.DataFrame({'pred_labels': result['model'](mydata)['assignments'][:,0]}).to_csv('../../marshfield/recode_like_data/results/181027pred_assignments.csv', index=False)
     
     
     # # If you have ground truth clustering
