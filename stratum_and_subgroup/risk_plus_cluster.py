@@ -573,7 +573,7 @@ class ModelParameters:
         self.c_input_size = self._hidden_size - self.side_channel_size
         self.c_hidden_size = 128
         # c_output_size = 50 # number of clusters
-        self.c_output_size = [8]  # np.arange(5, 15)
+        self.c_output_size = [5]  # np.arange(5, 15)
         self.o_input_size = self._hidden_size
         self.o_hidden_size = self._latent_size
 
@@ -677,7 +677,7 @@ if __name__ == "__main__":
                         np.array([km_sg_risk[s] for s in km.predict(mydata.cpu().numpy())])))
     print('K-means, risk by label; training AUC:',
           roc_auc_score(mytestoutcomes.cpu().numpy(),
-                        np.array([km_sg_risk[s] for s in km.predict(mytestdata.cpu().numpy())])))    
+                        np.array([km_sg_risk[s] for s in km.predict(mytestdata.cpu().numpy())])))
     
     # LASSO: AUC
     from sklearn.linear_model import LassoCV
@@ -708,12 +708,9 @@ if __name__ == "__main__":
     riskdf = riskdf.reset_index()
     riskdf.columns = ['assignment','risk']
     riskdf['count'] = [s for s in np.bincount(result['assignments'][:,0].astype(int)) if s!=0]
-    riskdf['score'] = np.log1p(riskdf['count']) * riskdf.risk
+    riskdf['score'] = riskdf['count'].pow(0.5) * riskdf.risk
     highest_risk_group = riskdf.iloc[riskdf.idxmax()[-1],0]
     in_hrg = result['model'](mytestdata)['assignments'][:,0] == highest_risk_group
-    print('High-risk intersection (ours, ours): AUC',
-          roc_auc_score(mytestoutcomes.cpu().numpy()[in_hrg],
-                        result['model'](mytestdata)['risks'][in_hrg]))
     test_sg_risk = group_risk(result['model'](mytestdata)['assignments'][:,0], mytestoutcomes)
     test_riskdf = pd.DataFrame.from_dict(test_sg_risk, orient='index')
     test_riskdf = test_riskdf.reset_index()
@@ -722,8 +719,50 @@ if __name__ == "__main__":
                             np.bincount(result['model'](mytestdata)['assignments'][:,0].\
                                         astype(int)) if s!=0]
     test_riskdf['score'] = np.log1p(test_riskdf['count']) * test_riskdf.risk
-    print(riskdf)
-    print(test_riskdf)
+    print('-----')
+    print('Ours risk table\n', riskdf)
+    print('Ours risk table (test)\n', test_riskdf)
+
+    km_riskdf = pd.DataFrame.from_dict(km_sg_risk, orient='index')
+    km_riskdf = km_riskdf.reset_index()
+    km_riskdf.columns = ['assignment','risk']
+    km_riskdf['count'] = [s for s in np.bincount(km.labels_.astype(int))
+                          if s!=0]
+    km_riskdf['score'] = np.log1p(km_riskdf['count']) * km_riskdf.risk
+    print('KMrisk table\n', km_riskdf)
+    km_tops= km.predict(mytestdata.cpu().numpy()) == km_riskdf.idxmax()[-1]
+
+    print('-----')
+    print('High-risk intersection (ours, ours): AUC',
+          roc_auc_score(mytestoutcomes.cpu().numpy()[in_hrg],
+                        result['model'](mytestdata)['risks'][in_hrg]))
+    print('High-risk k-means: AUC 0.5')  # how well ordered are the top predictions
+    
+    lasso_test_risks = lasso.predict(mytestdata.cpu().numpy())
+    ltr_top100 = lasso_test_risks > np.percentile(lasso_test_risks, 80)
+    print('High-risk lasso: AUC',  # how well ordered are the top predictions
+          roc_auc_score(mytestoutcomes.cpu().numpy()[ltr_top100], lasso_test_risks[ltr_top100]))
+
+    # Homogeneity: average pairwise L1?
+    def avg_pairwise_l1(matrix, samples=20, iter=1000):
+        matrix = torch.tensor(matrix)
+        total = 0
+        for i in range(iter):
+            total += (matrix[torch.randperm(matrix.shape[0])[:samples]].unsqueeze(0) -
+                      matrix[torch.randperm(matrix.shape[0])[:samples]].unsqueeze(1)).\
+                      abs().sum(2).mean()
+        return total.item()/iter
+        # return np.mean([
+        #     np.abs(np.subtract.outer(
+        #         matrix[np.random.choice(matrix.shape[0], samples),:].
+        #         reshape(-1,matrix.shape[0], samples),
+        #         matrix[np.random.choice(matrix.shape[0], samples),:].
+        #         reshape(matrix.shape[0], -1, samples)
+        #     )).sum(2).mean() for i in range(iter)])
+    print('-----')
+    print('our high-risk closeness:', avg_pairwise_l1(mytestdata.cpu().numpy()[in_hrg,:]))
+    print('lasso high-risk closeness:', avg_pairwise_l1(mytestdata.cpu().numpy()[ltr_top100,:]))
+    print('kmeans high-risk closeness:', avg_pairwise_l1(mytestdata.cpu().numpy()[km_tops,:]))
 
     
     
