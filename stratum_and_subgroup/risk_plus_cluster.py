@@ -751,6 +751,10 @@ if __name__ == "__main__":
     print('High-risk lasso: AUC',  # how well ordered are the top predictions
           roc_auc_score(mytestoutcomes.cpu().numpy()[ltr_top100], lasso_test_risks[ltr_top100]))
 
+    km_ltr_top = np.logical_and(ltr_top100, km_tops)
+    print('High-risk k-means then lasso: AUC',  # how well ordered are the top predictions
+          roc_auc_score(mytestoutcomes.cpu().numpy()[km_ltr_top], lasso_test_risks[km_ltr_top]))
+    
     # Homogeneity: average pairwise L1?
     def avg_pairwise_l1(matrix, samples=20, iter=1000):
         matrix = torch.tensor(matrix)
@@ -782,11 +786,13 @@ if __name__ == "__main__":
     print('our high-risk closeness:', avg_pairwise_l1(mytestdata.cpu().numpy()[in_hrg,:]))
     print('lasso high-risk closeness:', avg_pairwise_l1(mytestdata.cpu().numpy()[ltr_top100,:]))
     print('kmeans high-risk closeness:', avg_pairwise_l1(mytestdata.cpu().numpy()[km_tops,:]))
+    print('km-lasso high-risk closeness:', avg_pairwise_l1(mytestdata.cpu().numpy()[km_ltr_top,:]))    
 
     print('baseline closeness (l2):', avg_pairwise_l2(mytestdata.cpu().numpy()))
     print('our high-risk closeness (l2):', avg_pairwise_l2(mytestdata.cpu().numpy()[in_hrg,:]))
     print('lasso high-risk closeness (l2):', avg_pairwise_l2(mytestdata.cpu().numpy()[ltr_top100,:]))
     print('kmeans high-risk closeness (l2):', avg_pairwise_l2(mytestdata.cpu().numpy()[km_tops,:]))
+    print('km-lasso high-risk closeness (l2):', avg_pairwise_l2(mytestdata.cpu().numpy()[km_ltr_top,:]))
 
     # pd.DataFrame({'real_labels': mytestoutcomes.cpu().numpy()}).to_csv('../../marshfield/recode_like_data/results/181027assignments.csv', index=False)
     pd.DataFrame({'pred_labels': result['model'](mydata)['assignments'][:,0]}).to_csv('../../marshfield/recode_like_data/results/181027pred_assignments.csv', index=False)
